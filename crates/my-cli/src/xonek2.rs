@@ -218,6 +218,7 @@ impl XoneK2 {
                 EncoderDirection::Clockwise => println!("CW"),
                 EncoderDirection::CounterClockwise => println!("CCW"),
             },
+            0x00..=0x03 => {}
             _ => return None,
         };
 
