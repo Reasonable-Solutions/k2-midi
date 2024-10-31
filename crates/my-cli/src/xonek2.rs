@@ -93,7 +93,7 @@ impl XoneK2 {
                     // Lock mutex to access self
                     if let Ok(mut xone) = self_mutex_clone.lock() {
                         if let Some(control) = xone.parse_midi_message(message) {
-                            xone.handle_control(control);
+                            xone.handle_control(&mut conn_out, control);
                         }
                     }
                 },
@@ -104,12 +104,12 @@ impl XoneK2 {
         std::thread::park();
         Ok(())
     }
-    fn handle_control(&mut self, control: ControlType) {
+    fn handle_control(&mut self, out_conn: &mut MidiOutputConnection, control: ControlType) {
         match control {
             ControlType::Encoder(id, direction) => self.handle_encoder(id, direction),
             ControlType::Fader(id, level) => self.handle_fader(id, level),
             ControlType::Knob(id, level) => self.handle_knob(id, level),
-            ControlType::Button(id, pressed) => self.handle_button(id, pressed),
+            ControlType::Button(id, pressed) => self.handle_button(out_conn, id, pressed),
         }
     }
 
@@ -120,6 +120,14 @@ impl XoneK2 {
                 // Encoders rotation
                 0x15 => Some(ControlType::Encoder(
                     RENC,
+                    match level {
+                        0x01 => EncoderDirection::Clockwise,
+                        0x7f => EncoderDirection::CounterClockwise,
+                        _ => return None,
+                    },
+                )),
+                0x14 => Some(ControlType::Encoder(
+                    LENC,
                     match level {
                         0x01 => EncoderDirection::Clockwise,
                         0x7f => EncoderDirection::CounterClockwise,
@@ -138,11 +146,14 @@ impl XoneK2 {
 
             // Note On/Off (buttons, encoder presses)
             [status @ (NOTEON | NOTEOFF), note, velocity] => {
-                let pressed = *status == NOTEON && *velocity == 0x7f;
-                match note {
-                    0x0d => Some(ControlType::Button(*note, pressed)),
-                    _ => None,
-                }
+                println!("status: {:#04x}", status);
+                let pressed = match (*status, *velocity) {
+                    (NOTEON, 0x7f) => true,
+                    (NOTEON, 0x00) => false,
+                    (NOTEOFF, _) => false,
+                    _ => return None,
+                };
+                Some(ControlType::Button(*note, pressed))
             }
 
             _ => None,
@@ -154,16 +165,26 @@ impl XoneK2 {
             RENC => {
                 if self.bottom_right_encoder_shift {
                     match direction {
-                        EncoderDirection::Clockwise => todo!(),
-                        EncoderDirection::CounterClockwise => todo!(),
+                        EncoderDirection::Clockwise => print!("S-CW"),
+                        EncoderDirection::CounterClockwise => print!("S-CCW"),
+                    }
+                } else {
+                    match direction {
+                        EncoderDirection::Clockwise => print!("CW"),
+                        EncoderDirection::CounterClockwise => print!("CCW"),
                     }
                 }
             }
             LENC => {
                 if self.bottom_left_encoder_shift {
                     match direction {
-                        EncoderDirection::Clockwise => todo!(),
-                        EncoderDirection::CounterClockwise => todo!(),
+                        EncoderDirection::Clockwise => print!("S-CW"),
+                        EncoderDirection::CounterClockwise => print!("S-CCW"),
+                    }
+                } else {
+                    match direction {
+                        EncoderDirection::Clockwise => print!("CW"),
+                        EncoderDirection::CounterClockwise => print!("CCW"),
                     }
                 }
             }
@@ -190,19 +211,24 @@ impl XoneK2 {
         }
     }
 
-    fn handle_button(&mut self, id: u8, pressed: bool) {
+    fn handle_button(&mut self, conn_out: &mut MidiOutputConnection, id: u8, pressed: bool) {
         match id {
-            RENC => self.bottom_right_encoder_shift = pressed,
+            RENC => {
+                println!("press: {}", pressed);
+                self.bottom_right_encoder_shift = pressed
+            }
+
             LENC => self.bottom_left_encoder_shift = pressed,
             RSHIFT => {
                 // Shift button pressed
-                self.shift = self.shift.next();
-                if self.shift == Shift::Off {
-                    //  let _ = send_note_off(&mut conn_out, RSHIFT);
-                } else {
-                    let _ =
-                   //     send_note_with_color(&mut conn_out, RSHIFT, shift_to_color(&self.shift));
-                    println!("Shift activated, {:#?}", &self.shift);
+                if pressed {
+                    self.shift = self.shift.next();
+                    if self.shift == Shift::Off {
+                        let _ = send_note_off(conn_out, RSHIFT);
+                    } else {
+                        let _ = send_note_with_color(conn_out, RSHIFT, shift_to_color(&self.shift));
+                        println!("Shift activated, {:#?}", &self.shift);
+                    }
                 }
             }
             _ => {}
@@ -231,7 +257,7 @@ fn apply_color(note: u8, color: Color) -> u8 {
     note + color.offset()
 }
 
-pub fn send_note_with_color(
+fn send_note_with_color(
     conn_out: &mut MidiOutputConnection,
     note: u8,
     color: Color,
@@ -272,7 +298,7 @@ pub const LENC: u8 = 0x0d;
 pub const RENC: u8 = 0x0e;
 
 pub const NOTEON: u8 = 0x9e;
-pub const NOTEOFF: u8 = 0x00;
+pub const NOTEOFF: u8 = 0x8e;
 
 pub fn shift_to_color(shift: &Shift) -> Color {
     match shift {
