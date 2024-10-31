@@ -29,6 +29,24 @@
 
         craneLib = crane.mkLib pkgs;
         src = craneLib.cleanCargoSource ./.;
+        coreAudio = if pkgs.stdenv.isDarwin then
+          pkgs.symlinkJoin {
+            name = "sdk";
+            paths = with pkgs.darwin.apple_sdk.frameworks; [
+              AudioToolbox
+              AudioUnit
+              CoreAudio
+              CoreFoundation
+              CoreMIDI
+              OpenAL
+            ];
+            postBuild = ''
+              mkdir $out/System
+              mv $out/Library $out/System
+            '';
+          }
+        else
+          "";
 
         # Common arguments can be set here to avoid repeating them later
         commonArgs = {
@@ -36,6 +54,8 @@
           strictDeps = true;
 
           buildInputs = [
+            pkgs.rust-analyzer
+            coreAudio
             # Add additional build inputs here
           ] ++ lib.optionals pkgs.stdenv.isDarwin [
             # Additional darwin specific inputs can be set here
@@ -66,16 +86,17 @@
           doCheck = false;
         };
 
-        fileSetForCrate = crate: lib.fileset.toSource {
-          root = ./.;
-          fileset = lib.fileset.unions [
-            ./Cargo.toml
-            ./Cargo.lock
-            ./crates/my-common
-            ./crates/my-workspace-hack
-            crate
-          ];
-        };
+        fileSetForCrate = crate:
+          lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./crates/my-common
+              ./crates/my-workspace-hack
+              crate
+            ];
+          };
 
         # Build the top-level crates of the workspace as individual derivations.
         # This allows consumers to only depend on (and build) only what they need.
@@ -95,8 +116,7 @@
           cargoExtraArgs = "-p my-server";
           src = fileSetForCrate ./crates/my-server;
         });
-      in
-      {
+      in {
         checks = {
           # Build the crates as part of `nix flake check` for convenience
           inherit my-cli my-server;
@@ -112,14 +132,11 @@
             cargoClippyExtraArgs = "--all-targets -- --deny warnings";
           });
 
-          my-workspace-doc = craneLib.cargoDoc (commonArgs // {
-            inherit cargoArtifacts;
-          });
+          my-workspace-doc =
+            craneLib.cargoDoc (commonArgs // { inherit cargoArtifacts; });
 
           # Check formatting
-          my-workspace-fmt = craneLib.cargoFmt {
-            inherit src;
-          };
+          my-workspace-fmt = craneLib.cargoFmt { inherit src; };
 
           my-workspace-toml-fmt = craneLib.taploFmt {
             src = pkgs.lib.sources.sourceFilesBySuffices src [ ".toml" ];
@@ -128,14 +145,10 @@
           };
 
           # Audit dependencies
-          my-workspace-audit = craneLib.cargoAudit {
-            inherit src advisory-db;
-          };
+          my-workspace-audit = craneLib.cargoAudit { inherit src advisory-db; };
 
           # Audit licenses
-          my-workspace-deny = craneLib.cargoDeny {
-            inherit src;
-          };
+          my-workspace-deny = craneLib.cargoDeny { inherit src; };
 
           # Run tests with cargo-nextest
           # Consider setting `doCheck = false` on other crate derivations
@@ -159,27 +172,21 @@
               cargo hakari verify
             '';
 
-            nativeBuildInputs = [
-              pkgs.cargo-hakari
-            ];
+            nativeBuildInputs =
+              [ pkgs.cargo-hakari pkgs.rustPlatform.bindgenHook ];
           };
         };
 
         packages = {
           inherit my-cli my-server;
         } // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
-          my-workspace-llvm-coverage = craneLibLLvmTools.cargoLlvmCov (commonArgs // {
-            inherit cargoArtifacts;
-          });
+          my-workspace-llvm-coverage = craneLibLLvmTools.cargoLlvmCov
+            (commonArgs // { inherit cargoArtifacts; });
         };
 
         apps = {
-          my-cli = flake-utils.lib.mkApp {
-            drv = my-cli;
-          };
-          my-server = flake-utils.lib.mkApp {
-            drv = my-server;
-          };
+          my-cli = flake-utils.lib.mkApp { drv = my-cli; };
+          my-server = flake-utils.lib.mkApp { drv = my-server; };
         };
 
         devShells.default = craneLib.devShell {
@@ -190,9 +197,7 @@
           # MY_CUSTOM_DEVELOPMENT_VAR = "something else";
 
           # Extra inputs can be added here; cargo and rustc are provided by default.
-          packages = [
-            pkgs.cargo-hakari
-          ];
+          packages = [ pkgs.cargo-hakari ];
         };
       });
 }
