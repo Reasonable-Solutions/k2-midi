@@ -80,6 +80,7 @@ impl XoneK2 {
 
         let mut conn_out = midi_out.connect(out_port, "Xone K2 Output")?;
 
+        let _ = send_note_color_all(&mut conn_out);
         let _ = send_note_off_all(&mut conn_out);
 
         // Create a channel for communication between threads
@@ -87,7 +88,7 @@ impl XoneK2 {
         let sender_clone = sender.clone();
 
         // Spawn MIDI input handling thread
-        let conn_in = midi_in.connect(
+        let _conn_in = midi_in.connect(
             &in_port,
             "Xone K2 Input",
             move |_, message, _| {
@@ -175,7 +176,7 @@ impl XoneK2 {
             [status @ (NOTEON | NOTEOFF), note, velocity] => {
                 let pressed = match (*status, *velocity) {
                     (NOTEON, 0x7f) => true,
-                    (NOTEON, 0x00) => false,
+                    (NOTEON, 0x00) => false, // Technically, this exists but i hate devices that do it
                     (NOTEOFF, _) => false,
                     _ => return None,
                 };
@@ -187,7 +188,7 @@ impl XoneK2 {
     }
 
     fn handle_encoder(&mut self, id: u8, direction: EncoderDirection) -> Option<XoneMessage> {
-        let message = match id {
+        match id {
             RENC if self.bottom_right_encoder_shift => match direction {
                 EncoderDirection::Clockwise => println!("S-CW"),
                 EncoderDirection::CounterClockwise => println!("S-CCW"),
@@ -283,7 +284,7 @@ impl XoneK2 {
 }
 
 #[derive(Debug)]
-enum Color {
+pub enum Color {
     Red,
     Amber,
     Green,
@@ -373,6 +374,7 @@ pub fn send_note_off_all(conn_out: &mut MidiOutputConnection) -> Result<(), Box<
     all_buttons.extend_from_slice(&[RSHIFT]);
     all_buttons.extend_from_slice(&[LSHIFT]);
 
+    all_buttons.sort();
     for &button in &all_buttons {
         send_note_off(conn_out, button)?;
         sleep(Duration::from_millis(5));
@@ -388,27 +390,20 @@ pub fn send_note_color_all(conn_out: &mut MidiOutputConnection) -> Result<(), Bo
     all_buttons.extend_from_slice(&[RSHIFT]);
     all_buttons.extend_from_slice(&[LSHIFT]);
 
-    print!("{:#04x?}", all_buttons);
-    for (i, button) in all_buttons.iter().enumerate() {
-        print!("Button {:#04x} at index {}\n", button, i);
+    all_buttons.sort();
 
-        // Send note with color and check for errors
-        if let Err(e) = send_note_with_color(
-            conn_out,
-            *button,
-            if button % 2 == 0 {
-                Color::Amber
-            } else {
-                Color::Green
-            },
-        ) {
-            eprintln!("Failed to send color for button {:#04x}: {}", button, e);
-            return Err(e); // Optionally break or continue based on the error handling needed
+    for chunk in all_buttons.chunks(4) {
+        for &button in chunk {
+            if let Err(e) = send_note_with_color(conn_out, button, Color::Red) {
+                eprintln!("Failed to send color for button {:#04x}: {}", button, e);
+                return Err(e);
+            }
         }
-
-        // Slightly increase the delay to ensure the device can keep up
-        sleep(Duration::from_millis(50));
+        sleep(Duration::from_millis(100));
+        for &button in chunk {
+            send_note_off(conn_out, button)?;
+        }
     }
-
+    sleep(Duration::from_millis(1000));
     Ok(())
 }
