@@ -5,7 +5,8 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+crossbeam-channel = "0.5.13"
 midir = "0.10.0"
 my-common = { path = "../my-common" }
 my-workspace-hack = { version = "0.1", path = "../my-workspace-hack" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+nats = "0.25.0"

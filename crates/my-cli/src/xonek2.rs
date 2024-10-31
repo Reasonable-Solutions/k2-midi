@@ -5,19 +5,29 @@ use std::{
     time::Duration,
 };
 
+use crossbeam_channel::{Receiver, Sender};
 use midir::{
     Ignore, MidiInput, MidiInputConnection, MidiInputPort, MidiOutput, MidiOutputConnection,
     MidiOutputPort,
 };
 
+// This is midi in disguise carl, you can do better!
+#[derive(Debug, Clone)]
+pub enum XoneMessage {
+    Fader { id: u8, value: f32 },
+    Encoder { id: u8, direction: EncoderDirection },
+    Button { id: u8, pressed: bool },
+    Knob { id: u8, value: f32 },
+}
+
 #[derive(Debug, Clone, Copy)]
-enum EncoderDirection {
+pub enum EncoderDirection {
     Clockwise,
     CounterClockwise,
 }
 
 #[derive(Debug, Clone, Copy)]
-enum ControlType {
+pub enum ControlType {
     Encoder(u8, EncoderDirection), // (encoder_id, direction)
     Fader(u8, u8),                 // (fader_id, level)
     Knob(u8, u8),                  // (knob_id, level)
@@ -34,10 +44,16 @@ pub struct XoneK2 {
     pub top_mid_right_encoder_shift: bool,
     pub top_right_encoder_shift: bool,
     pub device: String,
+    pub tx: Sender<XoneMessage>,
+    pub rx: Receiver<XoneMessage>,
 }
 
 impl XoneK2 {
-    pub fn new(device: &str) -> Result<Self, Box<dyn Error>> {
+    pub fn new(
+        device: &str,
+        tx: Sender<XoneMessage>,
+        rx: Receiver<XoneMessage>,
+    ) -> Result<Self, Box<dyn Error>> {
         println!("SETTING UP");
         Ok(Self {
             shift: Shift::Off,
@@ -48,6 +64,8 @@ impl XoneK2 {
             top_mid_right_encoder_shift: false,
             top_right_encoder_shift: false,
             device: device.to_owned(),
+            tx,
+            rx,
         })
     }
     pub fn run(mut self) -> Result<(), Box<dyn Error>> {
@@ -105,11 +123,17 @@ impl XoneK2 {
         Ok(())
     }
     fn handle_control(&mut self, out_conn: &mut MidiOutputConnection, control: ControlType) {
-        match control {
+        let message = match control {
             ControlType::Encoder(id, direction) => self.handle_encoder(id, direction),
             ControlType::Fader(id, level) => self.handle_fader(id, level),
             ControlType::Knob(id, level) => self.handle_knob(id, level),
             ControlType::Button(id, pressed) => self.handle_button(out_conn, id, pressed),
+        };
+
+        if let Some(message) = message {
+            if let Err(e) = self.tx.send(message) {
+                eprintln!("Failed to send message: {}", e);
+            }
         }
     }
 
@@ -160,65 +184,73 @@ impl XoneK2 {
         }
     }
 
-    fn handle_encoder(&mut self, id: u8, direction: EncoderDirection) {
-        match id {
-            RENC => {
-                if self.bottom_right_encoder_shift {
-                    match direction {
-                        EncoderDirection::Clockwise => print!("S-CW"),
-                        EncoderDirection::CounterClockwise => print!("S-CCW"),
-                    }
-                } else {
-                    match direction {
-                        EncoderDirection::Clockwise => print!("CW"),
-                        EncoderDirection::CounterClockwise => print!("CCW"),
-                    }
-                }
-            }
-            LENC => {
-                if self.bottom_left_encoder_shift {
-                    match direction {
-                        EncoderDirection::Clockwise => print!("S-CW"),
-                        EncoderDirection::CounterClockwise => print!("S-CCW"),
-                    }
-                } else {
-                    match direction {
-                        EncoderDirection::Clockwise => print!("CW"),
-                        EncoderDirection::CounterClockwise => print!("CCW"),
-                    }
-                }
-            }
-            _ => {}
-        }
+    fn handle_encoder(&mut self, id: u8, direction: EncoderDirection) -> Option<XoneMessage> {
+        let message = match id {
+            RENC if self.bottom_right_encoder_shift => match direction {
+                EncoderDirection::Clockwise => println!("S-CW"),
+                EncoderDirection::CounterClockwise => println!("S-CCW"),
+            },
+            RENC => match direction {
+                EncoderDirection::Clockwise => println!("CW"),
+                EncoderDirection::CounterClockwise => println!("CCW"),
+            },
+            LENC if self.bottom_left_encoder_shift => match direction {
+                EncoderDirection::Clockwise => println!("S-CW"),
+                EncoderDirection::CounterClockwise => println!("S-CCW"),
+            },
+            LENC => match direction {
+                EncoderDirection::Clockwise => println!("CW"),
+                EncoderDirection::CounterClockwise => println!("CCW"),
+            },
+            _ => return None,
+        };
+
+        Some(XoneMessage::Encoder { id, direction })
     }
 
-    fn handle_fader(&mut self, id: u8, level: u8) {
+    fn handle_fader(&mut self, id: u8, level: u8) -> Option<XoneMessage> {
         let normalized_level = level as f32 / 127.0;
         match id {
             0x10 => println!("Fader 1: {:.2}", normalized_level),
             0x11 => println!("Fader 2: {:.2}", normalized_level),
             0x12 => println!("Fader 3: {:.2}", normalized_level),
             0x13 => println!("Fader 4: {:.2}", normalized_level),
-            _ => {}
+            _ => return None,
         }
+
+        Some(XoneMessage::Fader {
+            id,
+            value: normalized_level,
+        })
     }
 
-    fn handle_knob(&mut self, id: u8, level: u8) {
+    fn handle_knob(&mut self, id: u8, level: u8) -> Option<XoneMessage> {
         let normalized_level = level as f32 / 127.0;
         match id {
             0x04..=0x09 => println!("Knob {}: {:.2}", id - 0x04, normalized_level),
-            _ => {}
+            _ => return None,
         }
+
+        Some(XoneMessage::Knob {
+            id,
+            value: normalized_level,
+        })
     }
 
-    fn handle_button(&mut self, conn_out: &mut MidiOutputConnection, id: u8, pressed: bool) {
+    fn handle_button(
+        &mut self,
+        conn_out: &mut MidiOutputConnection,
+        id: u8,
+        pressed: bool,
+    ) -> Option<XoneMessage> {
         match id {
             RENC => {
                 println!("press: {}", pressed);
-                self.bottom_right_encoder_shift = pressed
+                self.bottom_right_encoder_shift = pressed;
             }
-
-            LENC => self.bottom_left_encoder_shift = pressed,
+            LENC => {
+                self.bottom_left_encoder_shift = pressed;
+            }
             RSHIFT => {
                 // Shift button pressed
                 if pressed {
@@ -231,8 +263,10 @@ impl XoneK2 {
                     }
                 }
             }
-            _ => {}
+            _ => return None,
         }
+
+        Some(XoneMessage::Button { id, pressed })
     }
 }
 

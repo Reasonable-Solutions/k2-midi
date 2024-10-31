@@ -55,7 +55,11 @@
 
           buildInputs = [
             pkgs.rust-analyzer
+            pkgs.natscli
+            pkgs.nats-top
+            pkgs.nats-server
             coreAudio
+
             # Add additional build inputs here
           ] ++ lib.optionals pkgs.stdenv.isDarwin [
             # Additional darwin specific inputs can be set here
