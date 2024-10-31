@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use midir::{
     Ignore, MidiInput, MidiInputConnection, MidiInputPort, MidiOutput, MidiOutputConnection,
     MidiOutputPort,
@@ -69,8 +69,6 @@ impl XoneK2 {
         })
     }
     pub fn run(mut self) -> Result<(), Box<dyn Error>> {
-        print!("RUNNING");
-
         let mut midi_in = MidiInput::new("MIDI Input")?;
         midi_in.ignore(Ignore::None);
 
@@ -91,35 +89,39 @@ impl XoneK2 {
         let mut conn_out = midi_out.connect(out_port, "Xone K2 Output")?;
 
         let _ = send_note_off_all(&mut conn_out);
-        print!("MMMMMMMM");
 
-        // Wrap self in Arc<Mutex> to share between threads
-        let self_mutex = Arc::new(Mutex::new(self));
-        let self_mutex_clone = Arc::clone(&self_mutex);
+        // Create a channel for communication between threads
+        let (sender, receiver) = bounded(32); // Buffer size of 32 messages
+        let sender_clone = sender.clone();
 
-        let _conn_in = midi_in
-            .connect(
-                &in_port,
-                "Xone K2 Input",
-                move |_, message, _| {
-                    // Debug print (optional)
-                    println!(
-                        "{:#04x},  {:#04x}, {:#04x}",
-                        message[0], message[1], message[2]
-                    );
+        // Spawn MIDI input handling thread
+        let conn_in = midi_in.connect(
+            &in_port,
+            "Xone K2 Input",
+            move |_, message, _| {
+                println!(
+                    "{:#04x}, {:#04x}, {:#04x}",
+                    message[0], message[1], message[2]
+                );
+                let _ = sender_clone.send(message.to_vec());
+            },
+            (),
+        )?;
 
-                    // Lock mutex to access self
-                    if let Ok(mut xone) = self_mutex_clone.lock() {
-                        if let Some(control) = xone.parse_midi_message(message) {
-                            xone.handle_control(&mut conn_out, control);
-                        }
+        loop {
+            match receiver.recv() {
+                Ok(message) => {
+                    if let Some(control) = self.parse_midi_message(&message) {
+                        self.handle_control(&mut conn_out, control);
                     }
-                },
-                (),
-            )
-            .expect("Failed to connect to MIDI input");
+                }
+                Err(e) => {
+                    println!("Channel receive error: {}", e);
+                    break;
+                }
+            }
+        }
 
-        std::thread::park();
         Ok(())
     }
     fn handle_control(&mut self, out_conn: &mut MidiOutputConnection, control: ControlType) {
@@ -142,6 +144,15 @@ impl XoneK2 {
             // CC Messages (faders, knobs, encoder rotation)
             [0xbe, note, level] => match note {
                 // Encoders rotation
+                0x00..=0x03 => Some(ControlType::Encoder(
+                    *note, // we know that it is an encoder, we just matched on it! ,
+                    match level {
+                        0x01 => EncoderDirection::Clockwise,
+                        0x7f => EncoderDirection::CounterClockwise,
+                        _ => return None,
+                    },
+                )),
+
                 0x15 => Some(ControlType::Encoder(
                     RENC,
                     match level {
@@ -163,7 +174,7 @@ impl XoneK2 {
                 0x10..=0x13 => Some(ControlType::Fader(*note, *level)),
 
                 // Knobs
-                0x04..=0x09 => Some(ControlType::Knob(*note, *level)),
+                0x04..=0x0f => Some(ControlType::Knob(*note, *level)),
 
                 _ => None,
             },
@@ -178,6 +189,11 @@ impl XoneK2 {
                     _ => return None,
                 };
                 Some(ControlType::Button(*note, pressed))
+            }
+
+            [w, t, f] => {
+                println!("status: {:#04x}, {:#04x}, {:#04x}", w, t, f);
+                Some(ControlType::Button(*t, true))
             }
 
             _ => None,
@@ -227,7 +243,7 @@ impl XoneK2 {
     fn handle_knob(&mut self, id: u8, level: u8) -> Option<XoneMessage> {
         let normalized_level = level as f32 / 127.0;
         match id {
-            0x04..=0x09 => println!("Knob {}: {:.2}", id - 0x04, normalized_level),
+            0x04..=0x0f => println!("Knob {}: {:.2}", id - 0x04, normalized_level),
             _ => return None,
         }
 
@@ -263,6 +279,16 @@ impl XoneK2 {
                     }
                 }
             }
+            // rows of buttons, top encoders to bottom button field
+            0x34..=0x37 => {}
+            0x30..=0x33 => {}
+            0x2c..=0x2f => {}
+            0x28..=0x2b => {}
+            0x24..=0x27 => {}
+            0x20..=0x23 => {}
+            0x1c..=0x1f => {}
+            0x18..=0x1b => {}
+            0x0c => {}
             _ => return None,
         }
 
