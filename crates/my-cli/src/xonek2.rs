@@ -5,6 +5,19 @@ use midir::{
     MidiOutputPort,
 };
 use tokio::time::sleep_until;
+#[derive(Debug, Clone, Copy)]
+enum EncoderDirection {
+    Clockwise,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ControlType {
+    Encoder(u8, EncoderDirection), // (encoder_id, direction)
+    Fader(u8, u8),                 // (fader_id, level)
+    Knob(u8, u8),                  // (knob_id, level)
+    Button(u8, bool),              // (button_id, pressed)
+}
 
 #[derive(Debug)]
 pub struct XoneK2 {
