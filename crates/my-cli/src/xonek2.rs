@@ -1,10 +1,15 @@
-use std::{error::Error, sync::Arc, thread::sleep, time::Duration};
+use std::{
+    error::Error,
+    sync::{Arc, Mutex},
+    thread::sleep,
+    time::Duration,
+};
 
 use midir::{
     Ignore, MidiInput, MidiInputConnection, MidiInputPort, MidiOutput, MidiOutputConnection,
     MidiOutputPort,
 };
-use tokio::time::sleep_until;
+
 #[derive(Debug, Clone, Copy)]
 enum EncoderDirection {
     Clockwise,
@@ -70,45 +75,138 @@ impl XoneK2 {
         let _ = send_note_off_all(&mut conn_out);
         print!("MMMMMMMM");
 
-        // Connect to MIDI input and handle incoming messages
+        // Wrap self in Arc<Mutex> to share between threads
+        let self_mutex = Arc::new(Mutex::new(self));
+        let self_mutex_clone = Arc::clone(&self_mutex);
+
         let _conn_in = midi_in
             .connect(
                 &in_port,
                 "Xone K2 Input",
                 move |_, message, _| {
-                    match message {
-                        // Example Shift button Note On message (adjust values as needed for your controller)
-                        [NOTEON, RSHIFT, 0x7F] => {
-                            // Shift button pressed
-                            self.shift = self.shift.next();
-                            if self.shift == Shift::Off {
-                                let _ = send_note_off(&mut conn_out, RSHIFT);
-                            } else {
-                                let _ = send_note_with_color(
-                                    &mut conn_out,
-                                    RSHIFT,
-                                    shift_to_color(&self.shift),
-                                );
-                                println!("Shift activated, {:#?}", &self.shift);
-                            }
+                    // Debug print (optional)
+                    println!(
+                        "{:#04x},  {:#04x}, {:#04x}",
+                        message[0], message[1], message[2]
+                    );
+
+                    // Lock mutex to access self
+                    if let Ok(mut xone) = self_mutex_clone.lock() {
+                        if let Some(control) = xone.parse_midi_message(message) {
+                            xone.handle_control(control);
                         }
-                        [NOTEON, note, velocity] => match self.shift {
-                            Shift::Off => todo!(),
-                            Shift::Red => todo!(),
-                            Shift::Amber => todo!(),
-                            Shift::Green => todo!(),
-                        },
-                        [a, b, c] => {
-                            println!("{:#04x},  {:#04x}, {:#04x}", a, b, c)
-                        }
-                        _ => {}
                     }
                 },
                 (),
             )
-            .expect("lolno");
+            .expect("Failed to connect to MIDI input");
+
         std::thread::park();
         Ok(())
+    }
+    fn handle_control(&mut self, control: ControlType) {
+        match control {
+            ControlType::Encoder(id, direction) => self.handle_encoder(id, direction),
+            ControlType::Fader(id, level) => self.handle_fader(id, level),
+            ControlType::Knob(id, level) => self.handle_knob(id, level),
+            ControlType::Button(id, pressed) => self.handle_button(id, pressed),
+        }
+    }
+
+    fn parse_midi_message(&mut self, message: &[u8]) -> Option<ControlType> {
+        match message {
+            // CC Messages (faders, knobs, encoder rotation)
+            [0xbe, note, level] => match note {
+                // Encoders rotation
+                0x15 => Some(ControlType::Encoder(
+                    RENC,
+                    match level {
+                        0x01 => EncoderDirection::Clockwise,
+                        0x7f => EncoderDirection::CounterClockwise,
+                        _ => return None,
+                    },
+                )),
+
+                // Faders
+                0x10..=0x13 => Some(ControlType::Fader(*note, *level)),
+
+                // Knobs
+                0x04..=0x09 => Some(ControlType::Knob(*note, *level)),
+
+                _ => None,
+            },
+
+            // Note On/Off (buttons, encoder presses)
+            [status @ (NOTEON | NOTEOFF), note, velocity] => {
+                let pressed = *status == NOTEON && *velocity == 0x7f;
+                match note {
+                    0x0d => Some(ControlType::Button(*note, pressed)),
+                    _ => None,
+                }
+            }
+
+            _ => None,
+        }
+    }
+
+    fn handle_encoder(&mut self, id: u8, direction: EncoderDirection) {
+        match id {
+            RENC => {
+                if self.bottom_right_encoder_shift {
+                    match direction {
+                        EncoderDirection::Clockwise => todo!(),
+                        EncoderDirection::CounterClockwise => todo!(),
+                    }
+                }
+            }
+            LENC => {
+                if self.bottom_left_encoder_shift {
+                    match direction {
+                        EncoderDirection::Clockwise => todo!(),
+                        EncoderDirection::CounterClockwise => todo!(),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_fader(&mut self, id: u8, level: u8) {
+        let normalized_level = level as f32 / 127.0;
+        match id {
+            0x10 => println!("Fader 1: {:.2}", normalized_level),
+            0x11 => println!("Fader 2: {:.2}", normalized_level),
+            0x12 => println!("Fader 3: {:.2}", normalized_level),
+            0x13 => println!("Fader 4: {:.2}", normalized_level),
+            _ => {}
+        }
+    }
+
+    fn handle_knob(&mut self, id: u8, level: u8) {
+        let normalized_level = level as f32 / 127.0;
+        match id {
+            0x04..=0x09 => println!("Knob {}: {:.2}", id - 0x04, normalized_level),
+            _ => {}
+        }
+    }
+
+    fn handle_button(&mut self, id: u8, pressed: bool) {
+        match id {
+            RENC => self.bottom_right_encoder_shift = pressed,
+            LENC => self.bottom_left_encoder_shift = pressed,
+            RSHIFT => {
+                // Shift button pressed
+                self.shift = self.shift.next();
+                if self.shift == Shift::Off {
+                    //  let _ = send_note_off(&mut conn_out, RSHIFT);
+                } else {
+                    let _ =
+                   //     send_note_with_color(&mut conn_out, RSHIFT, shift_to_color(&self.shift));
+                    println!("Shift activated, {:#?}", &self.shift);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
