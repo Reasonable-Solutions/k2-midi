@@ -1,5 +1,4 @@
-use crossbeam::channel::{bounded, Receiver, Sender};
-use crossbeam::scope;
+use crossbeam_channel::{bounded, Receiver, Sender};
 use midir::{MidiInput, MidiOutput};
 use nats;
 use std::error::Error;
@@ -13,8 +12,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (nats_tx, nats_rx) = bounded(100); // Channel for sending to NATS
     let (xone_tx, xone_rx) = bounded(100); // Channel for receiving from NATS
 
-    scope(|s| {
-        s.spawn(move |_| {
+    std::thread::scope(|s| {
+        s.spawn(move || {
             if let Err(e) = run_nats(xone_tx, nats_rx) {
                 eprintln!("NATS error: {}", e);
             }
@@ -28,8 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Park the main thread to keep the application running
         std::thread::park();
-    })
-    .expect("Crossbeam scope error");
+    });
 
     Ok(())
 }

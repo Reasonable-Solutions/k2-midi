@@ -5,7 +5,6 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-crossbeam = "0.8.4"
 crossbeam-channel = "0.5.13"
 midir = "0.10.0"
 my-common = { path = "../my-common" }
