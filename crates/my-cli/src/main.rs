@@ -3,7 +3,6 @@ use crossbeam::scope;
 use midir::{MidiInput, MidiOutput};
 use nats;
 use std::error::Error;
-use std::thread;
 mod xonek2;
 use xonek2::*;
 
@@ -11,12 +10,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Scanning for MIDI devices...");
     list_midi_ports()?;
 
-    let nc = nats::connect("nats://localhost:4222")?;
     let (nats_tx, nats_rx) = bounded(100); // Channel for sending to NATS
     let (xone_tx, xone_rx) = bounded(100); // Channel for receiving from NATS
 
     scope(|s| {
-        // Spawn NATS handler within the crossbeam scope
         s.spawn(move |_| {
             if let Err(e) = run_nats(xone_tx, nats_rx) {
                 eprintln!("NATS error: {}", e);
@@ -27,7 +24,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         let k2 = XoneK2::new("XONE:K2", nats_tx, xone_rx);
         dbg!(&k2);
 
-        // Run XoneK2 handler
         k2.expect("k2").run();
 
         // Park the main thread to keep the application running
@@ -56,7 +52,7 @@ fn list_midi_ports() -> Result<(), Box<dyn Error>> {
         println!("{}: {}", i, midi_out.port_name(p)?);
     }
 
-    println!(); // Empty line for better readability
+    println!();
     Ok(())
 }
 
@@ -67,7 +63,6 @@ fn run_nats(
 ) -> Result<(), Box<dyn Error>> {
     let nc = nats::connect("nats://localhost:4222")?;
 
-    // Handle publishing messages to NATS
     while let Ok(msg) = nats_rx.recv() {
         match msg {
             XoneMessage::Fader { id, value } => {

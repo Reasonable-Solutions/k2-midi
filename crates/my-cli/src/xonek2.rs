@@ -1,17 +1,10 @@
-use std::{
-    error::Error,
-    sync::{Arc, Mutex},
-    thread::sleep,
-    time::Duration,
-};
+use std::{error::Error, thread::sleep, time::Duration};
 
 use crossbeam_channel::{bounded, Receiver, Sender};
-use midir::{
-    Ignore, MidiInput, MidiInputConnection, MidiInputPort, MidiOutput, MidiOutputConnection,
-    MidiOutputPort,
-};
+use midir::{Ignore, MidiInput, MidiOutput, MidiOutputConnection};
 
 // This is midi in disguise carl, you can do better!
+// (Turn these into _ONLY_ transport messages and add a separate mixer set later)
 #[derive(Debug, Clone)]
 pub enum XoneMessage {
     Fader { id: u8, value: f32 },
@@ -54,7 +47,6 @@ impl XoneK2 {
         tx: Sender<XoneMessage>,
         rx: Receiver<XoneMessage>,
     ) -> Result<Self, Box<dyn Error>> {
-        println!("SETTING UP");
         Ok(Self {
             shift: Shift::Off,
             bottom_left_encoder_shift: false,
@@ -116,7 +108,7 @@ impl XoneK2 {
                     }
                 }
                 Err(e) => {
-                    println!("Channel receive error: {}", e);
+                    eprintln!("Channel receive error: {}", e);
                     break;
                 }
             }
@@ -181,7 +173,6 @@ impl XoneK2 {
 
             // Note On/Off (buttons, encoder presses)
             [status @ (NOTEON | NOTEOFF), note, velocity] => {
-                println!("status: {:#04x}", status);
                 let pressed = match (*status, *velocity) {
                     (NOTEON, 0x7f) => true,
                     (NOTEON, 0x00) => false,
@@ -189,11 +180,6 @@ impl XoneK2 {
                     _ => return None,
                 };
                 Some(ControlType::Button(*note, pressed))
-            }
-
-            [w, t, f] => {
-                println!("status: {:#04x}, {:#04x}, {:#04x}", w, t, f);
-                Some(ControlType::Button(*t, true))
             }
 
             _ => None,
@@ -262,7 +248,6 @@ impl XoneK2 {
     ) -> Option<XoneMessage> {
         match id {
             RENC => {
-                println!("press: {}", pressed);
                 self.bottom_right_encoder_shift = pressed;
             }
             LENC => {
