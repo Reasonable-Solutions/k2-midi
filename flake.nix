@@ -37,6 +37,7 @@
               AudioUnit
               CoreAudio
               CoreFoundation
+
               CoreMIDI
               OpenAL
             ];
@@ -54,8 +55,10 @@
           strictDeps = true;
 
           buildInputs = [
+            pkgs.pkg-config
             pkgs.rust-analyzer
             pkgs.natscli
+            pkgs.jack2
             pkgs.nats-top
             pkgs.nats-server
             coreAudio
@@ -199,7 +202,11 @@
 
           # Additional dev-shell environment variables can be set directly
           # MY_CUSTOM_DEVELOPMENT_VAR = "something else";
+          LD_LIBRARY_PATH = "$LD_LIBRARY_PATH:${pkgs.jack2}/lib";
 
+          shellHook = ''
+            export DYLD_LIBRARY_PATH=${pkgs.jack2}/lib:$DYLD_LIBRARY_PATH
+          '';
           # Extra inputs can be added here; cargo and rustc are provided by default.
           packages = [ pkgs.cargo-hakari ];
         };

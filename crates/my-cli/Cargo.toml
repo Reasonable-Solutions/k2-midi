@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 crossbeam-channel = "0.5.13"
+jack = "0.13.0"
 midir = "0.10.0"
 my-common = { path = "../my-common" }
 my-workspace-hack = { version = "0.1", path = "../my-workspace-hack" }

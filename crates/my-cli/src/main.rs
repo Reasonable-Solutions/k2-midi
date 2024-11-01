@@ -1,13 +1,14 @@
 use crossbeam_channel::{bounded, Receiver, Sender};
 use midir::{MidiInput, MidiOutput};
 use nats;
-use std::error::Error;
 mod xonek2;
+use jack::{Client, PortFlags};
+use std::{error::Error, vec};
 use xonek2::*;
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("Scanning for MIDI devices...");
-    list_midi_ports()?;
+    list_midi_ports_jack()?;
 
     let (nats_tx, nats_rx) = bounded(100); // Channel for sending to NATS
     let (xone_tx, xone_rx) = bounded(100); // Channel for receiving from NATS
@@ -29,6 +30,34 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::thread::park();
     });
 
+    Ok(())
+}
+
+fn list_midi_ports_jack() -> Result<(), Box<dyn Error>> {
+    // Initialize JACK client
+    let (client, _status) = Client::new("MidiPortLister", jack::ClientOptions::NO_START_SERVER)?;
+
+    println!("\nAvailable MIDI Input Ports:");
+    println!("---------------------------");
+    for (i, port) in client
+        .ports(None, Some("midi"), (PortFlags::IS_INPUT))
+        .iter()
+        .enumerate()
+    {
+        println!("{}: {}", i, port);
+    }
+
+    println!("\nAvailable MIDI Output Ports:");
+    println!("----------------------------");
+    for (i, port) in client
+        .ports(None, Some("midi"), (PortFlags::IS_OUTPUT))
+        .iter()
+        .enumerate()
+    {
+        println!("{}: {}", i, port);
+    }
+
+    println!();
     Ok(())
 }
 
