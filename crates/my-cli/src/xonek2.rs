@@ -65,13 +65,22 @@ impl XoneK2 {
         device: &str,
         tx: Sender<XoneMessage>,
         rx: Receiver<XoneMessage>,
-    ) -> Result<Self, Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error>> {
         let (client, _status) = Client::new("XoneK2-midi", ClientOptions::NO_START_SERVER)?;
-
         let midi_in = client.register_port("midi_in", MidiIn::default())?;
         let midi_out = client.register_port("midi_out", MidiOut::default())?;
 
-        Ok(Self {
+        // Connect the ports first
+        client.connect_ports_by_name(
+            "Midi-Bridge:XONE:K2 5:(capture_0) XONE:K2 MIDI 1",
+            "XoneK2-midi:midi_in",
+        )?;
+        client.connect_ports_by_name(
+            "XoneK2-midi:midi_out",
+            "Midi-Bridge:XONE:K2 5:(playback_0) XONE:K2 MIDI 1",
+        )?;
+
+        let xone = Self {
             shift: Shift::Off,
             bottom_left_encoder_shift: false,
             bottom_right_encoder_shift: false,
@@ -84,21 +93,8 @@ impl XoneK2 {
             rx,
             midi_in,
             midi_out,
-        })
-    }
-
-    pub fn run(mut self) -> Result<(), Box<dyn Error>> {
-        print!("goo");
-
-        let (client, _status) = Client::new("XoneK2-midi", ClientOptions::NO_START_SERVER)?;
-
-        self.midi_in = client.register_port("midi_in", jack::MidiIn::default())?;
-        self.midi_out = client.register_port("midi_out", jack::MidiOut::default())?;
-        // how tf do i run "reset leds here??"
-
-        let _active_client = client.activate_async((), self)?;
-
-        println!("JACK client activated.");
+        };
+        let _active_client = client.activate_async((), xone)?;
         std::thread::park();
         Ok(())
     }

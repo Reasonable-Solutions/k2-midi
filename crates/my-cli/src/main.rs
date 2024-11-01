@@ -1,5 +1,4 @@
 use crossbeam_channel::{bounded, Receiver, Sender};
-use midir::{MidiInput, MidiOutput};
 use nats;
 mod xonek2;
 use jack::{Client, PortFlags};
@@ -24,9 +23,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         let k2 = XoneK2::new("XONE:K2", nats_tx, xone_rx);
         dbg!(&k2);
 
-        k2.expect("k2").run();
-
-        // Park the main thread to keep the application running
         std::thread::park();
     });
 
@@ -40,7 +36,7 @@ fn list_midi_ports_jack() -> Result<(), Box<dyn Error>> {
     println!("\nAvailable MIDI Input Ports:");
     println!("---------------------------");
     for (i, port) in client
-        .ports(None, Some("midi"), (PortFlags::IS_INPUT))
+        .ports(None, Some("midi"), PortFlags::IS_INPUT)
         .iter()
         .enumerate()
     {
@@ -50,7 +46,7 @@ fn list_midi_ports_jack() -> Result<(), Box<dyn Error>> {
     println!("\nAvailable MIDI Output Ports:");
     println!("----------------------------");
     for (i, port) in client
-        .ports(None, Some("midi"), (PortFlags::IS_OUTPUT))
+        .ports(None, Some("midi"), PortFlags::IS_OUTPUT)
         .iter()
         .enumerate()
     {
@@ -61,29 +57,6 @@ fn list_midi_ports_jack() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn list_midi_ports() -> Result<(), Box<dyn Error>> {
-    let midi_in = MidiInput::new("MIDI Input")?;
-    let midi_out = MidiOutput::new("MIDI Output")?;
-
-    println!("\nAvailable MIDI Input Ports:");
-    println!("---------------------------");
-    let in_ports = midi_in.ports();
-    for (i, p) in in_ports.iter().enumerate() {
-        println!("{}: {}", i, midi_in.port_name(p)?);
-    }
-
-    println!("\nAvailable MIDI Output Ports:");
-    println!("----------------------------");
-    let out_ports = midi_out.ports();
-    for (i, p) in out_ports.iter().enumerate() {
-        println!("{}: {}", i, midi_out.port_name(p)?);
-    }
-
-    println!();
-    Ok(())
-}
-
-// NATS handler function
 fn run_nats(
     nats_tx: Sender<XoneMessage>,
     nats_rx: Receiver<XoneMessage>,
