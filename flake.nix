@@ -59,6 +59,7 @@
             pkgs.rust-analyzer
             pkgs.natscli
             pkgs.jack2
+            pkgs.alsa-lib
             pkgs.nats-top
             pkgs.nats-server
             coreAudio

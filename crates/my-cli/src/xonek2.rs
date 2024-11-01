@@ -1,11 +1,13 @@
 use std::{error::Error, thread::sleep, time::Duration};
 
-use crossbeam_channel::{bounded, Receiver, Sender};
-use midir::{Ignore, MidiInput, MidiOutput, MidiOutputConnection};
+use crossbeam_channel::{Receiver, Sender};
+use jack::{
+    Client, ClientOptions, Control, MidiIn, MidiOut, MidiWriter, Port, ProcessHandler, ProcessScope,
+};
 
 // This is midi in disguise carl, you can do better!
 // (Turn these into _ONLY_ transport messages and add a separate mixer set later)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum XoneMessage {
     Fader { id: u8, value: f32 },
     Encoder { id: u8, direction: EncoderDirection },
@@ -39,6 +41,23 @@ pub struct XoneK2 {
     pub device: String,
     pub tx: Sender<XoneMessage>,
     pub rx: Receiver<XoneMessage>,
+    midi_in: Port<MidiIn>,
+    midi_out: Port<MidiOut>,
+}
+impl ProcessHandler for XoneK2 {
+    fn process(&mut self, _: &Client, ps: &ProcessScope) -> Control {
+        let in_port = self.midi_in.iter(ps);
+
+        let controls: Vec<_> = in_port
+            .filter_map(|raw_midi| self.parse_midi_message(raw_midi.bytes))
+            .collect();
+
+        for control in controls {
+            let _ = &mut self.handle_control(control, ps);
+        }
+
+        Control::Continue
+    }
 }
 
 impl XoneK2 {
@@ -47,6 +66,11 @@ impl XoneK2 {
         tx: Sender<XoneMessage>,
         rx: Receiver<XoneMessage>,
     ) -> Result<Self, Box<dyn Error>> {
+        let (client, _status) = Client::new("XoneK2-midi", ClientOptions::NO_START_SERVER)?;
+
+        let midi_in = client.register_port("midi_in", MidiIn::default())?;
+        let midi_out = client.register_port("midi_out", MidiOut::default())?;
+
         Ok(Self {
             shift: Shift::Off,
             bottom_left_encoder_shift: false,
@@ -58,81 +82,41 @@ impl XoneK2 {
             device: device.to_owned(),
             tx,
             rx,
+            midi_in,
+            midi_out,
         })
     }
+
     pub fn run(mut self) -> Result<(), Box<dyn Error>> {
-        let mut midi_in = MidiInput::new("MIDI Input")?;
-        midi_in.ignore(Ignore::None);
+        print!("goo");
 
-        let in_ports = midi_in.ports();
-        let in_port = in_ports
-            .iter()
-            .find(|p| midi_in.port_name(p).unwrap().contains(&self.device))
-            .ok_or("MIDI Input port not found")?
-            .clone();
+        let (client, _status) = Client::new("XoneK2-midi", ClientOptions::NO_START_SERVER)?;
 
-        let midi_out = MidiOutput::new("MIDI Output")?;
-        let out_ports = midi_out.ports();
-        let out_port = out_ports
-            .iter()
-            .find(|p| midi_out.port_name(p).unwrap().contains(&self.device))
-            .ok_or("MIDI Output port not found")?;
+        self.midi_in = client.register_port("midi_in", jack::MidiIn::default())?;
+        self.midi_out = client.register_port("midi_out", jack::MidiOut::default())?;
+        // how tf do i run "reset leds here??"
 
-        let mut conn_out = midi_out.connect(out_port, "Xone K2 Output")?;
+        let _active_client = client.activate_async((), self)?;
 
-        let _ = send_note_color_all(&mut conn_out);
-        let _ = send_note_off_all(&mut conn_out);
-
-        // Create a channel for communication between threads
-        let (sender, receiver) = bounded(32); // Buffer size of 32 messages
-        let sender_clone = sender.clone();
-
-        // Spawn MIDI input handling thread
-        let _conn_in = midi_in.connect(
-            &in_port,
-            "Xone K2 Input",
-            move |_, message, _| {
-                println!(
-                    "{:#04x}, {:#04x}, {:#04x}",
-                    message[0], message[1], message[2]
-                );
-                let _ = sender_clone.send(message.to_vec());
-            },
-            (),
-        )?;
-
-        loop {
-            match receiver.recv() {
-                Ok(message) => {
-                    if let Some(control) = self.parse_midi_message(&message) {
-                        self.handle_control(&mut conn_out, control);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Channel receive error: {}", e);
-                    break;
-                }
-            }
-        }
-
+        println!("JACK client activated.");
+        std::thread::park();
         Ok(())
     }
-    fn handle_control(&mut self, out_conn: &mut MidiOutputConnection, control: ControlType) {
-        let message = match control {
-            ControlType::Encoder(id, direction) => self.handle_encoder(id, direction),
-            ControlType::Fader(id, level) => self.handle_fader(id, level),
-            ControlType::Knob(id, level) => self.handle_knob(id, level),
-            ControlType::Button(id, pressed) => self.handle_button(out_conn, id, pressed),
-        };
 
+    fn handle_control(&mut self, control: ControlType, ps: &ProcessScope) {
+        let message = match control {
+            ControlType::Encoder(id, direction) => &self.handle_encoder(id, direction),
+            ControlType::Fader(id, level) => &self.handle_fader(id, level),
+            ControlType::Knob(id, level) => &self.handle_knob(id, level),
+            ControlType::Button(id, pressed) => &self.handle_button(id, pressed, ps),
+        };
+        dbg!(&control);
         if let Some(message) = message {
-            if let Err(e) = self.tx.send(message) {
-                eprintln!("Failed to send message: {}", e);
-            }
+            let _ = self.tx.send(message.to_owned());
         }
     }
 
-    fn parse_midi_message(&mut self, message: &[u8]) -> Option<ControlType> {
+    fn parse_midi_message(&self, message: &[u8]) -> Option<ControlType> {
         match message {
             // CC Messages (faders, knobs, encoder rotation)
             [0xbe, note, level] => match note {
@@ -209,7 +193,10 @@ impl XoneK2 {
             _ => return None,
         };
 
-        Some(XoneMessage::Encoder { id, direction })
+        Some(XoneMessage::Encoder {
+            id: id,
+            direction: direction,
+        })
     }
 
     fn handle_fader(&mut self, id: u8, level: u8) -> Option<XoneMessage> {
@@ -223,7 +210,7 @@ impl XoneK2 {
         }
 
         Some(XoneMessage::Fader {
-            id,
+            id: id,
             value: normalized_level,
         })
     }
@@ -236,17 +223,12 @@ impl XoneK2 {
         }
 
         Some(XoneMessage::Knob {
-            id,
+            id: id,
             value: normalized_level,
         })
     }
 
-    fn handle_button(
-        &mut self,
-        conn_out: &mut MidiOutputConnection,
-        id: u8,
-        pressed: bool,
-    ) -> Option<XoneMessage> {
+    fn handle_button(&mut self, id: u8, pressed: bool, ps: &ProcessScope) -> Option<XoneMessage> {
         match id {
             RENC => {
                 self.bottom_right_encoder_shift = pressed;
@@ -259,9 +241,9 @@ impl XoneK2 {
                 if pressed {
                     self.shift = self.shift.next();
                     if self.shift == Shift::Off {
-                        let _ = send_note_off(conn_out, RSHIFT);
+                        let _ = self.send_note_off(RSHIFT, ps);
                     } else {
-                        let _ = send_note_with_color(conn_out, RSHIFT, shift_to_color(&self.shift));
+                        let _ = self.send_note_with_color(RSHIFT, shift_to_color(&self.shift), ps);
                         println!("Shift activated, {:#?}", &self.shift);
                     }
                 }
@@ -279,7 +261,79 @@ impl XoneK2 {
             _ => return None,
         }
 
-        Some(XoneMessage::Button { id, pressed })
+        Some(XoneMessage::Button {
+            id: id,
+            pressed: pressed,
+        })
+    }
+
+    fn send_note_with_color(
+        &mut self,
+        note: u8,
+        color: Color,
+        ps: &ProcessScope,
+    ) -> Result<(), Box<dyn Error>> {
+        let adjusted_note = apply_color(note, color);
+        print!("{:#04x}", adjusted_note);
+        let message = [0x9e, adjusted_note, 0x7F];
+        let mut out_port = self.midi_out.writer(ps);
+        out_port.write(&jack::RawMidi {
+            time: 0,
+            bytes: &message,
+        })?;
+        Ok(())
+    }
+
+    pub fn send_note_off(&mut self, note: u8, ps: &ProcessScope) -> Result<(), Box<dyn Error>> {
+        let message = [0x8e, note, 0x00];
+        let mut out_port = self.midi_out.writer(ps);
+        out_port.write(&jack::RawMidi {
+            time: 0,
+            bytes: &message,
+        })?;
+        Ok(())
+    }
+
+    // These are trash, i cannot have sleep but i need to use the RawMidi{time: 0} etc
+    pub fn send_note_off_all(&mut self, ps: &ProcessScope) -> Result<(), Box<dyn Error>> {
+        let mut all_buttons: Vec<u8> = Vec::new();
+        all_buttons.extend_from_slice(&TOPENCODERS);
+        all_buttons.extend_from_slice(&POTBUTTONS);
+        all_buttons.extend_from_slice(&BOTTOMBUTTONS);
+        all_buttons.extend_from_slice(&[RSHIFT]);
+        all_buttons.extend_from_slice(&[LSHIFT]);
+
+        all_buttons.sort();
+        for &button in &all_buttons {
+            &self.send_note_off(button, ps)?;
+            sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    }
+
+    pub fn send_note_color_all(&mut self, ps: &ProcessScope) -> Result<(), Box<dyn Error>> {
+        let mut all_buttons: Vec<u8> = Vec::new();
+        all_buttons.extend_from_slice(&TOPENCODERS);
+        all_buttons.extend_from_slice(&POTBUTTONS);
+        all_buttons.extend_from_slice(&BOTTOMBUTTONS);
+        all_buttons.extend_from_slice(&[RSHIFT]);
+        all_buttons.extend_from_slice(&[LSHIFT]);
+
+        all_buttons.sort();
+
+        for chunk in all_buttons.chunks(4) {
+            for &button in chunk {
+                if let Err(e) = &self.send_note_with_color(button, Color::Red, ps) {
+                    eprintln!("Failed to send color for button {:#04x}: {}", button, e);
+                }
+            }
+            sleep(Duration::from_millis(100));
+            for &button in chunk {
+                &self.send_note_off(button, ps)?;
+            }
+        }
+        sleep(Duration::from_millis(1000));
+        Ok(())
     }
 }
 
@@ -302,26 +356,6 @@ impl Color {
 
 fn apply_color(note: u8, color: Color) -> u8 {
     note + color.offset()
-}
-
-fn send_note_with_color(
-    conn_out: &mut MidiOutputConnection,
-    note: u8,
-    color: Color,
-) -> Result<(), Box<dyn Error>> {
-    let adjusted_note = apply_color(note, color);
-    print!("{:#04x}", adjusted_note);
-    let message = [0x9e, adjusted_note, 0x7F];
-
-    conn_out.send(&message)?;
-    Ok(())
-}
-
-pub fn send_note_off(conn_out: &mut MidiOutputConnection, note: u8) -> Result<(), Box<dyn Error>> {
-    let message = [0x8e, note, 0x00];
-
-    conn_out.send(&message)?;
-    Ok(())
 }
 
 #[derive(PartialOrd, Ord, PartialEq, Eq, Debug)]
@@ -364,46 +398,4 @@ impl Shift {
             Shift::Green => Shift::Off,
         }
     }
-}
-
-pub fn send_note_off_all(conn_out: &mut MidiOutputConnection) -> Result<(), Box<dyn Error>> {
-    let mut all_buttons: Vec<u8> = Vec::new();
-    all_buttons.extend_from_slice(&TOPENCODERS);
-    all_buttons.extend_from_slice(&POTBUTTONS);
-    all_buttons.extend_from_slice(&BOTTOMBUTTONS);
-    all_buttons.extend_from_slice(&[RSHIFT]);
-    all_buttons.extend_from_slice(&[LSHIFT]);
-
-    all_buttons.sort();
-    for &button in &all_buttons {
-        send_note_off(conn_out, button)?;
-        sleep(Duration::from_millis(5));
-    }
-    Ok(())
-}
-
-pub fn send_note_color_all(conn_out: &mut MidiOutputConnection) -> Result<(), Box<dyn Error>> {
-    let mut all_buttons: Vec<u8> = Vec::new();
-    all_buttons.extend_from_slice(&TOPENCODERS);
-    all_buttons.extend_from_slice(&POTBUTTONS);
-    all_buttons.extend_from_slice(&BOTTOMBUTTONS);
-    all_buttons.extend_from_slice(&[RSHIFT]);
-    all_buttons.extend_from_slice(&[LSHIFT]);
-
-    all_buttons.sort();
-
-    for chunk in all_buttons.chunks(4) {
-        for &button in chunk {
-            if let Err(e) = send_note_with_color(conn_out, button, Color::Red) {
-                eprintln!("Failed to send color for button {:#04x}: {}", button, e);
-                return Err(e);
-            }
-        }
-        sleep(Duration::from_millis(100));
-        for &button in chunk {
-            send_note_off(conn_out, button)?;
-        }
-    }
-    sleep(Duration::from_millis(1000));
-    Ok(())
 }
