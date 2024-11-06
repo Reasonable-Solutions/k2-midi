@@ -72,12 +72,12 @@ impl XoneK2 {
 
         // Connect the ports first
         client.connect_ports_by_name(
-            "Midi-Bridge:XONE:K2 5:(capture_0) XONE:K2 MIDI 1",
+            "Midi-Bridge:ALLEN-HEATH LTD- XONE:K2 at usb-0000:00:14-0-3-2-1- full speed:(capture_0) XONE:K2 MIDI 1",
             "XoneK2-midi:midi_in",
         )?;
         client.connect_ports_by_name(
             "XoneK2-midi:midi_out",
-            "Midi-Bridge:XONE:K2 5:(playback_0) XONE:K2 MIDI 1",
+            "Midi-Bridge:ALLEN-HEATH LTD- XONE:K2 at usb-0000:00:14-0-3-2-1- full speed:(playback_0) XONE:K2 MIDI 1",
         )?;
 
         let xone = Self {
