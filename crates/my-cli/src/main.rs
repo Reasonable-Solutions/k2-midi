@@ -69,9 +69,17 @@ fn run_nats(
                 let _ = nc.publish("xone.fader", format!("{},{}", id, value));
             }
             XoneMessage::Encoder { id, direction } => {
-                let _ = nc.publish("xone.encoder", format!("{},{:?}", id, direction));
+                println!("{}", id);
+                if id == 14 {
+                    let _ = nc.publish("xone.library", format!("{:?}", direction));
+                } else {
+                    let _ = nc.publish("xone.encoder", format!("{},{:?}", id, direction));
+                }
             }
             XoneMessage::Button { id, pressed } => {
+                if id == 14 {
+                    let _ = nc.publish("xone.library", format!("select",));
+                }
                 let _ = nc.publish("xone.button", format!("{},{}", id, pressed));
             }
             XoneMessage::Knob { id, value } => {
