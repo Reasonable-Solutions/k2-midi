@@ -30,7 +30,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn list_midi_ports_jack() -> Result<(), Box<dyn Error>> {
-    // Initialize JACK client
     let (client, _status) = Client::new("MidiPortLister", jack::ClientOptions::NO_START_SERVER)?;
 
     println!("\nAvailable MIDI Input Ports:");

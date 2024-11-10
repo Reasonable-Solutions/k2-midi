@@ -1,120 +1,134 @@
-#![warn(clippy::all, rust_2018_idioms)]
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
-use crossbeam::channel::{unbounded, Receiver};
+use crossbeam::channel::{unbounded, Receiver, Sender};
 use eframe::egui;
 use nats::Connection;
-use std::{thread, time::Duration};
+use std::path::PathBuf;
+use std::time::Duration;
+use std::{fs, thread};
 
 enum CounterMessage {
     Increment,
     Decrement,
+    Select,
 }
 
-fn main() -> eframe::Result {
-    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
-    let (sender, receiver) = unbounded();
+struct SelectMessage {
+    file_path: String,
+}
+
+fn main() {
+    let (ui_sender, ui_receiver): (Sender<CounterMessage>, Receiver<CounterMessage>) = unbounded();
+    let (select_sender, select_receiver): (Sender<SelectMessage>, Receiver<SelectMessage>) =
+        unbounded();
 
     let nats_client = nats::connect("nats://localhost:4222").unwrap();
+    let nats_publisher = nats_client.clone();
 
     thread::spawn(move || {
         for message in nats_client.subscribe("xone.library").unwrap().messages() {
-            // Parse message to determine action (increment or decrement)
             match message.data.as_slice() {
-                b"Clockwise" => sender.send(CounterMessage::Increment).unwrap(),
-                b"CounterClockwise" => sender.send(CounterMessage::Decrement).unwrap(),
-                _ => (),
+                b"Clockwise" => ui_sender.send(CounterMessage::Increment).unwrap(),
+                b"CounterClockwise" => ui_sender.send(CounterMessage::Decrement).unwrap(),
+                b"select" => ui_sender.send(CounterMessage::Select).unwrap(),
+                any_other => {
+                    dbg!(any_other);
+                }
             }
         }
     });
 
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 300.0])
-            .with_min_inner_size([300.0, 220.0]),
-        ..Default::default()
-    };
+    thread::spawn(move || {
+        while let Ok(select_message) = select_receiver.recv() {
+            dbg!(&select_message.file_path);
+            nats_publisher
+                .publish("xone.library", select_message.file_path.as_bytes())
+                .unwrap();
+        }
+    });
+
     eframe::run_native(
-        "eframe template",
-        native_options,
-        Box::new(|cc| Ok(Box::new(MyApp::new(cc, receiver)))),
-    )
+        "FLAC File Selector",
+        eframe::NativeOptions::default(),
+        Box::new(|cc| {
+            Ok(Box::new(FileSelectorApp::new(
+                cc,
+                ui_receiver,
+                select_sender,
+            )))
+        }),
+    );
 }
 
-#[derive(Debug, Default)]
-struct State {
-    select_index: u16,
+struct FileSelectorApp {
+    ui_receiver: Receiver<CounterMessage>,
+    select_sender: Sender<SelectMessage>,
+    flac_files: Vec<PathBuf>,
+    selected_index: usize,
 }
 
-struct MyApp {
-    receiver: Receiver<CounterMessage>,
-    ui_state: State,
-}
+impl FileSelectorApp {
+    fn new(
+        _cc: &eframe::CreationContext<'_>,
+        ui_receiver: Receiver<CounterMessage>,
+        select_sender: Sender<SelectMessage>,
+    ) -> Self {
+        let flac_files = fs::read_dir("./music")
+            .unwrap()
+            .filter_map(|entry| {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.extension().map(|ext| ext == "flac").unwrap_or(false) {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-impl MyApp {
-    fn new(_cc: &eframe::CreationContext<'_>, receiver: Receiver<CounterMessage>) -> Self {
         Self {
-            receiver,
-            ui_state: State::default(),
+            ui_receiver,
+            select_sender,
+            flac_files,
+            selected_index: 0,
         }
     }
 }
 
-impl eframe::App for MyApp {
-    /// Called each time the UI needs repainting, which may be many times per second.
+impl eframe::App for FileSelectorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Put your widgets into a `SidePanel`, `TopBottomPanel`, `CentralPanel`, `Window` or `Area`.
-        // For inspiration and more examples, go to https://emilk.github.io/egui
-        while let Ok(message) = self.receiver.try_recv() {
+        while let Ok(message) = self.ui_receiver.try_recv() {
             match message {
                 CounterMessage::Increment => {
-                    self.ui_state.select_index = self.ui_state.select_index.saturating_add(1);
+                    if self.selected_index < self.flac_files.len() - 1 {
+                        self.selected_index += 1;
+                    }
                 }
                 CounterMessage::Decrement => {
-                    self.ui_state.select_index = self.ui_state.select_index.saturating_sub(1);
+                    if self.selected_index > 0 {
+                        self.selected_index -= 1;
+                    }
+                }
+                CounterMessage::Select => {
+                    if let Some(selected_file) = self.flac_files.get(self.selected_index) {
+                        let file_path = selected_file.to_string_lossy().to_string();
+                        self.select_sender
+                            .send(SelectMessage { file_path })
+                            .unwrap();
+                    }
                 }
             }
         }
+        // TODO WTF EGUI NOT COOL
         ctx.request_repaint_after(Duration::from_millis(12));
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            // The top panel is often a good place for a menu bar:
-
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("Quit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
-                ui.add_space(16.0);
-
-                egui::widgets::global_theme_preference_buttons(ui);
-            });
-        });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
-            ui.heading("eframe template");
-
-            ui.separator();
-            ui.heading(self.ui_state.select_index.to_string());
-            ["file1", "file2"].map(|f| ui.heading(f));
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                powered_by_egui_and_eframe(ui);
-                egui::warn_if_debug_build(ui);
-            });
+            for (i, file) in self.flac_files.iter().enumerate() {
+                let label = file.file_name().unwrap().to_string_lossy();
+                if i == self.selected_index {
+                    ui.colored_label(egui::Color32::YELLOW, label);
+                } else {
+                    ui.label(label);
+                }
+            }
         });
     }
-}
-
-fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.label("Powered by ");
-        ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-        ui.label(" and ");
-        ui.hyperlink_to(
-            "eframe",
-            "https://github.com/emilk/egui/tree/master/crates/eframe",
-        );
-        ui.label(".");
-    });
 }
