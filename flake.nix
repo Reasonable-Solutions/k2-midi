@@ -54,15 +54,27 @@
           inherit src;
           strictDeps = true;
 
-          buildInputs = [
-            pkgs.pkg-config
-            pkgs.rust-analyzer
-            pkgs.natscli
-            pkgs.jack2
-            pkgs.alsa-lib
-            pkgs.nats-top
-            pkgs.nats-server
+          buildInputs = with pkgs; [
+            pkg-config
+            rust-analyzer
+            natscli
+            jack2
+            alsa-lib
+            nats-top
+            nats-server
             coreAudio
+
+            # GUI libs
+            libxkbcommon
+            libGL
+            fontconfig
+
+
+            # x11 libraries
+            xorg.libXcursor
+            xorg.libXrandr
+            xorg.libXi
+            xorg.libX11
 
             # Add additional build inputs here
           ] ++ lib.optionals pkgs.stdenv.isDarwin [
@@ -203,7 +215,7 @@
 
           # Additional dev-shell environment variables can be set directly
           # MY_CUSTOM_DEVELOPMENT_VAR = "something else";
-          LD_LIBRARY_PATH = "$LD_LIBRARY_PATH:${pkgs.jack2}/lib";
+          LD_LIBRARY_PATH = "${lib.makeLibraryPath commonArgs.buildInputs}";
 
           shellHook = ''
             export DYLD_LIBRARY_PATH=${pkgs.jack2}/lib:$DYLD_LIBRARY_PATH

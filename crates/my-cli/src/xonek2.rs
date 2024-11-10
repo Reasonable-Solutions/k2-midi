@@ -71,13 +71,14 @@ impl XoneK2 {
         let midi_out = client.register_port("midi_out", MidiOut::default())?;
 
         // Connect the ports first
+        // TODO: Just fuzzy match on XONE:K2 capture/playback
         client.connect_ports_by_name(
-            "Midi-Bridge:ALLEN-HEATH LTD- XONE:K2 at usb-0000:00:14-0-3-2-1- full speed:(capture_0) XONE:K2 MIDI 1",
+            "Midi-Bridge:ALLEN-HEATH LTD- XONE:K2 at usb-0000:00:14-0-2- full speed:(capture_0) XONE:K2 MIDI 1",
             "XoneK2-midi:midi_in",
         )?;
         client.connect_ports_by_name(
             "XoneK2-midi:midi_out",
-            "Midi-Bridge:ALLEN-HEATH LTD- XONE:K2 at usb-0000:00:14-0-3-2-1- full speed:(playback_0) XONE:K2 MIDI 1",
+            "Midi-Bridge:ALLEN-HEATH LTD- XONE:K2 at usb-0000:00:14-0-2- full speed:(playback_0) XONE:K2 MIDI 1",
         )?;
 
         let xone = Self {
@@ -170,20 +171,20 @@ impl XoneK2 {
     fn handle_encoder(&mut self, id: u8, direction: EncoderDirection) -> Option<XoneMessage> {
         match id {
             RENC if self.bottom_right_encoder_shift => match direction {
-                EncoderDirection::Clockwise => println!("S-CW"),
-                EncoderDirection::CounterClockwise => println!("S-CCW"),
+                EncoderDirection::Clockwise => {}
+                EncoderDirection::CounterClockwise => {}
             },
             RENC => match direction {
-                EncoderDirection::Clockwise => println!("CW"),
-                EncoderDirection::CounterClockwise => println!("CCW"),
+                EncoderDirection::Clockwise => {}
+                EncoderDirection::CounterClockwise => {}
             },
             LENC if self.bottom_left_encoder_shift => match direction {
-                EncoderDirection::Clockwise => println!("S-CW"),
-                EncoderDirection::CounterClockwise => println!("S-CCW"),
+                EncoderDirection::Clockwise => {}
+                EncoderDirection::CounterClockwise => {}
             },
             LENC => match direction {
-                EncoderDirection::Clockwise => println!("CW"),
-                EncoderDirection::CounterClockwise => println!("CCW"),
+                EncoderDirection::Clockwise => {}
+                EncoderDirection::CounterClockwise => {}
             },
             0x00..=0x03 => {}
             _ => return None,
@@ -198,10 +199,10 @@ impl XoneK2 {
     fn handle_fader(&mut self, id: u8, level: u8) -> Option<XoneMessage> {
         let normalized_level = level as f32 / 127.0;
         match id {
-            0x10 => println!("Fader 1: {:.2}", normalized_level),
-            0x11 => println!("Fader 2: {:.2}", normalized_level),
-            0x12 => println!("Fader 3: {:.2}", normalized_level),
-            0x13 => println!("Fader 4: {:.2}", normalized_level),
+            0x10 => {} // println!("Fader 1: {:.2}", normalized_level),
+            0x11 => {} //println!("Fader 2: {:.2}", normalized_level),
+            0x12 => {} //println!("Fader 3: {:.2}", normalized_level),
+            0x13 => {} // println!("Fader 4: {:.2}", normalized_level),
             _ => return None,
         }
 
@@ -214,7 +215,7 @@ impl XoneK2 {
     fn handle_knob(&mut self, id: u8, level: u8) -> Option<XoneMessage> {
         let normalized_level = level as f32 / 127.0;
         match id {
-            0x04..=0x0f => println!("Knob {}: {:.2}", id - 0x04, normalized_level),
+            0x04..=0x0f => {} // println!("Knob {}: {:.2}", id - 0x04, normalized_level),
             _ => return None,
         }
 
