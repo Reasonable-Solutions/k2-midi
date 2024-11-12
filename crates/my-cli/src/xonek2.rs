@@ -73,12 +73,12 @@ impl XoneK2 {
         // Connect the ports first
         // TODO: Just fuzzy match on XONE:K2 capture/playback
         client.connect_ports_by_name(
-            "Midi-Bridge:ALLEN-HEATH LTD- XONE:K2 at usb-0000:00:14-0-2- full speed:(capture_0) XONE:K2 MIDI 1",
+            "Midi-Bridge:XONE:K2 3:(capture_0) XONE:K2 MIDI 1",
             "XoneK2-midi:midi_in",
         )?;
         client.connect_ports_by_name(
             "XoneK2-midi:midi_out",
-            "Midi-Bridge:ALLEN-HEATH LTD- XONE:K2 at usb-0000:00:14-0-2- full speed:(playback_0) XONE:K2 MIDI 1",
+            "Midi-Bridge:XONE:K2 3:(playback_0) XONE:K2 MIDI 1",
         )?;
 
         let xone = Self {
