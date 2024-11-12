@@ -1,5 +1,5 @@
 [package]
-name = "my-server"
+name = "library"
 version.workspace = true
 edition.workspace = true
 publish = false

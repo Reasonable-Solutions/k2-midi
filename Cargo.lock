@@ -1872,6 +1872,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "library"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "eframe",
+ "egui",
+ "env_logger",
+ "image",
+ "log",
+ "metaflac",
+ "nats",
+ "serde",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1969,6 +1984,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "midi-nats"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "jack",
+ "my-common",
+ "my-workspace-hack",
+ "nats",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1996,17 +2022,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.48.0",
-]
-
-[[package]]
-name = "my-cli"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "jack",
- "my-common",
- "my-workspace-hack",
- "nats",
 ]
 
 [[package]]

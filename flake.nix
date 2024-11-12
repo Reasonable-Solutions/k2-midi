@@ -69,16 +69,13 @@
             libGL
             fontconfig
 
-
             # x11 libraries
             xorg.libXcursor
             xorg.libXrandr
             xorg.libXi
             xorg.libX11
 
-            # Add additional build inputs here
           ] ++ lib.optionals pkgs.stdenv.isDarwin [
-            # Additional darwin specific inputs can be set here
             pkgs.libiconv
           ];
 
@@ -126,20 +123,26 @@
         # Note that the cargo workspace must define `workspace.members` using wildcards,
         # otherwise, omitting a crate (like we do below) will result in errors since
         # cargo won't be able to find the sources for all members.
-        my-cli = craneLib.buildPackage (individualCrateArgs // {
-          pname = "my-cli";
-          cargoExtraArgs = "-p my-cli";
-          src = fileSetForCrate ./crates/my-cli;
+        midi-nats = craneLib.buildPackage (individualCrateArgs // {
+          pname = "midi-nats";
+          cargoExtraArgs = "-p midi-nats";
+          src = fileSetForCrate ./crates/midi-nats;
         });
-        my-server = craneLib.buildPackage (individualCrateArgs // {
-          pname = "my-server";
-          cargoExtraArgs = "-p my-server";
-          src = fileSetForCrate ./crates/my-server;
+        player = craneLib.buildPackage (individualCrateArgs // {
+          pname = "player";
+          cargoExtraArgs = "-p player";
+          src = fileSetForCrate ./crates/player;
+        });
+
+        library = craneLib.buildPackage (individualCrateArgs // {
+          pname = "library";
+          cargoExtraArgs = "-p library";
+          src = fileSetForCrate ./crates/library;
         });
       in {
         checks = {
           # Build the crates as part of `nix flake check` for convenience
-          inherit my-cli my-server;
+          inherit midi-nats library player;
 
           # Run clippy (and deny all warnings) on the workspace source,
           # again, reusing the dependency artifacts from above.
@@ -198,15 +201,16 @@
         };
 
         packages = {
-          inherit my-cli my-server;
+          inherit midi-nats library player;
         } // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
           my-workspace-llvm-coverage = craneLibLLvmTools.cargoLlvmCov
             (commonArgs // { inherit cargoArtifacts; });
         };
 
         apps = {
-          my-cli = flake-utils.lib.mkApp { drv = my-cli; };
-          my-server = flake-utils.lib.mkApp { drv = my-server; };
+          midi-nats = flake-utils.lib.mkApp { drv = midi-nats; };
+          library = flake-utils.lib.mkApp { drv = library; };
+          player = flake-utils.lib.mkApp { drv = player; };
         };
 
         devShells.default = craneLib.devShell {
