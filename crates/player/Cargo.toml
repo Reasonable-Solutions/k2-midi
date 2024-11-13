@@ -1,5 +1,5 @@
 [package]
-name = "library"
+name = "player"
 version.workspace = true
 edition.workspace = true
 publish = false
@@ -14,3 +14,6 @@ crossbeam = "0.8.4"
 nats = "0.25.0"
 metaflac = "0.2.7"
 image = { version = "0.25.5", default-features = false, features = ["jpeg"] }
+rtrb = "0.3.1"
+jack = "0.13.0"
+claxon = "0.4.3"
