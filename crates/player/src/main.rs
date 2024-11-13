@@ -1,53 +1,104 @@
-use crossbeam::channel::{unbounded, Receiver, Sender};
-use eframe::egui;
-use eframe::egui::ColorImage;
-use egui::{TextureHandle, TextureOptions};
-use image::imageops::{self, FilterType};
-use image::{load_from_memory, ImageReader};
-use metaflac::{Block, Tag};
-use nats::Connection;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::io::Cursor;
+use claxon::FlacReader;
+use jack::{AudioOut, Client, ClientOptions, Control, ProcessScope};
+use rtrb::RingBuffer;
+use std::fs::File;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::{fs, thread};
 
-enum CounterMessage {
-    Increment,
-    Decrement,
-    Select,
+fn main() {
+    let (client, _status) = Client::new("flac_player", ClientOptions::NO_START_SERVER)
+        .expect("Failed to create JACK client");
+
+    let jack_buffer_size = client.buffer_size();
+    let jack_sample_rate = client.sample_rate();
+    println!(
+        "JACK buffer size: {}, sample rate: {}",
+        jack_buffer_size, jack_sample_rate
+    );
+
+    let rtrb_buffer_size = jack_buffer_size * 32;
+    let (mut producer_left, mut consumer_left) = RingBuffer::<f32>::new(rtrb_buffer_size as usize);
+    let (mut producer_right, mut consumer_right) =
+        RingBuffer::<f32>::new(rtrb_buffer_size as usize);
+
+    let mut out_port_left = client
+        .register_port("out_left", AudioOut::default())
+        .expect("Failed to create left output port");
+    let mut out_port_right = client
+        .register_port("out_right", AudioOut::default())
+        .expect("Failed to create right output port");
+
+    let audio_file_path = PathBuf::from("./music/psy.flac");
+    thread::spawn(move || {
+        decode_flac(
+            audio_file_path,
+            &mut producer_left,
+            &mut producer_right,
+            jack_sample_rate as u32,
+        );
+    });
+
+    let process_callback = move |_: &Client, ps: &ProcessScope| -> Control {
+        let out_buffer_left = out_port_left.as_mut_slice(ps);
+        let out_buffer_right = out_port_right.as_mut_slice(ps);
+
+        // Process both channels
+        for (left, right) in out_buffer_left.iter_mut().zip(out_buffer_right.iter_mut()) {
+            *left = consumer_left.pop().unwrap_or(0.0);
+            *right = consumer_right.pop().unwrap_or(0.0);
+        }
+
+        Control::Continue
+    };
+
+    let active_client = client
+        .activate_async((), jack::ClosureProcessHandler::new(process_callback))
+        .expect("Failed to activate client");
+
+    thread::park();
+
+    active_client
+        .deactivate()
+        .expect("Failed to deactivate client");
 }
 
-struct SelectMessage {
-    file_path: String,
-}
-
-struct FlacFile {
+fn decode_flac(
     path: PathBuf,
-    title: Option<String>,
-    artist: Option<String>,
-    album: Option<String>,
-    inline_album_art: Option<egui::TextureHandle>,
-    large_album_art: Option<egui::TextureHandle>,
-}
-struct PlayerApp {
-    playing: bool,
-    ui_receiver: Receiver<CounterMessage>,
-    select_sender: Sender<SelectMessage>,
-}
+    producer_left: &mut rtrb::Producer<f32>,
+    producer_right: &mut rtrb::Producer<f32>,
+    output_sample_rate: u32,
+) {
+    let file = File::open(&path).expect("Failed to open FLAC file");
+    let mut reader = FlacReader::new(file).expect("Failed to create FLAC reader");
+    let input_sample_rate = reader.streaminfo().sample_rate;
+    let channels = reader.streaminfo().channels as usize;
+    let bits_per_sample = reader.streaminfo().bits_per_sample;
 
-impl PlayerApp {
-    fn new(
-        _cc: &eframe::CreationContext<'_>,
-        ui_receiver: Receiver<CounterMessage>,
-        select_sender: Sender<SelectMessage>,
-    ) -> Self {
-        Self {
-            playing: false,
-            ui_receiver,
-            select_sender,
+    if channels != 2 {
+        panic!("This player only supports stereo FLAC files");
+    }
+
+    let scale_factor = 1.0 / (1_i32 << (bits_per_sample - 1)) as f64;
+
+    println!(
+        "FLAC: {} Hz, {} channels, {} bits | JACK: {} Hz",
+        input_sample_rate, channels, bits_per_sample, output_sample_rate
+    );
+
+    let mut current_channel = 0;
+    for sample in reader.samples() {
+        let sample = sample.expect("Failed to read sample") as f64 * scale_factor;
+        let clamped_sample = sample.max(-1.0).min(1.0);
+
+        let producer = if current_channel == 0 {
+            &mut *producer_left
+        } else {
+            &mut *producer_right
+        };
+
+        while producer.push(clamped_sample as f32).is_err() {
+            thread::sleep(Duration::from_micros(10));
         }
     }
 
@@ -55,81 +106,3 @@ impl PlayerApp {
         self.playing = !self.playing;
     }
 }
-
-fn main() {
-    let (ui_sender, ui_receiver): (Sender<CounterMessage>, Receiver<CounterMessage>) = unbounded();
-    let (select_sender, select_receiver): (Sender<SelectMessage>, Receiver<SelectMessage>) =
-        unbounded();
-
-    let nats_client = nats::connect("nats://localhost:4222").unwrap();
-    let nats_client_for_thread = nats_client.clone();
-
-    thread::spawn(move || {
-        for message in nats_client_for_thread
-            .subscribe("xone.>")
-            .unwrap()
-            .messages()
-        {
-            dbg!("{:?}", String::from_utf8_lossy(&message.data));
-            match message.data.as_slice() {
-                b"Clockwise" => ui_sender.send(CounterMessage::Increment).unwrap(),
-                b"CounterClockwise" => ui_sender.send(CounterMessage::Decrement).unwrap(),
-                b"Select" => ui_sender.send(CounterMessage::Select).unwrap(),
-                _ => (),
-            }
-        }
-    });
-
-    thread::spawn(move || {
-        while let Ok(select_message) = select_receiver.recv() {
-            nats_client
-                .publish("xone.player.1.select", select_message.file_path.as_bytes())
-                .unwrap();
-        }
-    });
-
-    eframe::run_native(
-        "FLAC Player",
-        eframe::NativeOptions::default(),
-        Box::new(|cc| {
-            Ok(Box::new(PlayerApp::new(
-                cc,
-                ui_receiver,
-                select_sender,
-            )))
-        }),
-    );
-}
-
-impl eframe::App for PlayerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Handle incoming messages
-        while let Ok(message) = self.ui_receiver.try_recv() {
-            match message {
-                CounterMessage::Increment => self.playing = true,
-                CounterMessage::Decrement => self.playing = false,
-                CounterMessage::Select => {
-                    // Example action on select, sending a message if playing
-                    if self.playing {
-                        let _ = self.select_sender.send(SelectMessage {
-                            file_path: "example/path/to/selected/file".to_string(),
-                        });
-                    }
-                }
-            }
-        }
-
-        // UI rendering
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // Display and toggle the "Playing" state
-            let label = if self.playing { "Playing" } else { "Paused" };
-            ui.colored_label(egui::Color32::YELLOW, label);
-
-            // Button to toggle playing state
-            if ui.button("Toggle Playing").clicked() {
-                self.toggle_playing();
-            }
-        });
-    }
-}
-    
