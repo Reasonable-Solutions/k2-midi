@@ -252,8 +252,16 @@ fn load_album_art(
         }
     };
 
-    // This should be a crop, it's what mixxx does
-    let inline_thumbnail = image::imageops::resize(&image, 60, 30, FilterType::Lanczos3);
+    let square_thumbnail = image::imageops::resize(&image, 60, 60, FilterType::Lanczos3);
+    let inline_thumbnail = image::imageops::crop_imm(
+        &square_thumbnail,
+        0,                                    // x offset
+        (square_thumbnail.height() - 30) / 2, // y offset: center vertically
+        60,                                   // width
+        30,                                   // height
+    )
+    .to_image();
+
     let inline_color_image = ColorImage::from_rgba_unmultiplied(
         [
             inline_thumbnail.width() as usize,
@@ -261,6 +269,7 @@ fn load_album_art(
         ],
         &inline_thumbnail,
     );
+
     let inline_texture = cc.egui_ctx.load_texture(
         "inline_album_art",
         inline_color_image,
