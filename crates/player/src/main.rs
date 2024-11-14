@@ -135,7 +135,7 @@ fn main() {
 
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
-        "FLAC Player",
+        "ANAHATA",
         native_options,
         Box::new(|cc| Ok(Box::new(PlayerApp::new(cc, meta_rx)))),
     );
