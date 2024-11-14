@@ -63,12 +63,13 @@ fn run_nats(
     let nc = nats::connect("nats://localhost:4222")?;
 
     while let Ok(msg) = nats_rx.recv() {
+        dbg!(&msg);
         match msg {
             XoneMessage::Fader { id, value } => {
                 let _ = nc.publish("xone.fader", format!("{},{}", id, value));
             }
             XoneMessage::Encoder { id, direction } => {
-                println!("{}", id);
+                println!("ENCODER {}", id);
                 if id == 14 {
                     let _ = nc.publish("xone.library", format!("{:?}", direction));
                 } else {
@@ -76,8 +77,10 @@ fn run_nats(
                 }
             }
             XoneMessage::Button { id, pressed } => {
+                println!("BUTTON {}", id);
                 if id == 14 {
-                    let _ = nc.publish("xone.library", format!("select",));
+                    print!("select button pressed");
+                    let _ = nc.publish("xone.library", format!("Select",));
                 }
                 let _ = nc.publish("xone.button", format!("{},{}", id, pressed));
             }

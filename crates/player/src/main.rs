@@ -252,21 +252,31 @@ fn control_thread(cmd_tx: Sender<PlayerCommand>) {
     let nc = nats::connect("nats://localhost:4222").expect("Failed to connect to NATS");
 
     let sub = nc
-        .subscribe("xone.library.>")
+        .subscribe("xone.>")
         .expect("Failed to subscribe to stop topic");
 
     println!("Control thread started, listening for NATS messages");
 
     for msg in sub.messages() {
-        let subject = msg.subject;
-        if subject == "xone.library.stop" {
-            if IS_PLAYING.load(Ordering::Relaxed) == true {
-                println!("Received resume command via NATS");
-                IS_PLAYING.store(false, Ordering::Relaxed)
-            } else {
-                println!("Received stop command via NATS");
-                IS_PLAYING.store(true, Ordering::Relaxed)
-            };
+        dbg!(&msg);
+        match msg.subject.as_ref() {
+            "xone.library.stop" => {
+                if IS_PLAYING.load(Ordering::Relaxed) == true {
+                    println!("Received resume command via NATS");
+                    IS_PLAYING.store(false, Ordering::Relaxed)
+                } else {
+                    println!("Received stop command via NATS");
+                    IS_PLAYING.store(true, Ordering::Relaxed)
+                };
+            }
+            "xone.player.1.select" => {
+                let content = String::from_utf8_lossy(&msg.data);
+                let path = PathBuf::from(content.into_owned());
+                cmd_tx
+                    .send(PlayerCommand::ChangeSong(path))
+                    .expect("Failed to send command");
+            }
+            _ => {}
         }
     }
 }

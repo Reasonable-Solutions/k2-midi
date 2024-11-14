@@ -14,7 +14,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::{fs, thread};
 
-enum CounterMessage {
+#[derive(Debug)]
+enum UiMessage {
     Increment,
     Decrement,
     Select,
@@ -34,7 +35,7 @@ struct FlacFile {
 }
 
 fn main() {
-    let (ui_sender, ui_receiver): (Sender<CounterMessage>, Receiver<CounterMessage>) = unbounded();
+    let (ui_sender, ui_receiver): (Sender<UiMessage>, Receiver<UiMessage>) = unbounded();
     let (select_sender, select_receiver): (Sender<SelectMessage>, Receiver<SelectMessage>) =
         unbounded();
 
@@ -47,11 +48,10 @@ fn main() {
             .unwrap()
             .messages()
         {
-            dbg!("{:?}", String::from_utf8_lossy(&message.data));
             match message.data.as_slice() {
-                b"Clockwise" => ui_sender.send(CounterMessage::Increment).unwrap(),
-                b"CounterClockwise" => ui_sender.send(CounterMessage::Decrement).unwrap(),
-                b"Select" => ui_sender.send(CounterMessage::Select).unwrap(),
+                b"Clockwise" => ui_sender.send(UiMessage::Increment).unwrap(),
+                b"CounterClockwise" => ui_sender.send(UiMessage::Decrement).unwrap(),
+                b"Select" => ui_sender.send(UiMessage::Select).unwrap(),
                 _ => (),
             }
         }
@@ -66,7 +66,7 @@ fn main() {
     });
 
     eframe::run_native(
-        "FLAC File Selector",
+        "AKASHA",
         eframe::NativeOptions::default(),
         Box::new(|cc| {
             Ok(Box::new(FileSelectorApp::new(
@@ -79,7 +79,7 @@ fn main() {
 }
 
 struct FileSelectorApp {
-    ui_receiver: Receiver<CounterMessage>,
+    ui_receiver: Receiver<UiMessage>,
     select_sender: Sender<SelectMessage>,
     flac_files: Vec<FlacFile>,
     selected_index: usize,
@@ -89,7 +89,7 @@ struct FileSelectorApp {
 impl FileSelectorApp {
     fn new(
         cc: &eframe::CreationContext<'_>,
-        ui_receiver: Receiver<CounterMessage>,
+        ui_receiver: Receiver<UiMessage>,
         select_sender: Sender<SelectMessage>,
     ) -> Self {
         let mut album_art_cache = HashMap::new();
@@ -120,27 +120,29 @@ impl eframe::App for FileSelectorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while let Ok(message) = self.ui_receiver.try_recv() {
             match message {
-                CounterMessage::Increment => {
+                UiMessage::Increment => {
                     if self.selected_index < self.flac_files.len() - 1 {
                         self.selected_index += 1;
                     }
                 }
-                CounterMessage::Decrement => {
+                UiMessage::Decrement => {
                     if self.selected_index > 0 {
                         self.selected_index -= 1;
                     }
                 }
-                CounterMessage::Select => {
+                UiMessage::Select => {
                     if let Some(selected_file) = self.flac_files.get(self.selected_index) {
+                        dbg!(&selected_file.path);
                         let file_path = selected_file.path.to_string_lossy().to_string();
-                        self.select_sender
-                            .send(SelectMessage { file_path })
-                            .unwrap();
+                        if let Err(err) = self.select_sender.send(SelectMessage { file_path }) {
+                            eprintln!("Failed to send selection: {}", err);
+                        }
                     }
                 }
             }
         }
         ctx.request_repaint_after(Duration::from_millis(12));
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if let Some(selected_file) = self.flac_files.get(self.selected_index) {
