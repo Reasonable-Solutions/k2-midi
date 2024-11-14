@@ -53,10 +53,10 @@ impl eframe::App for PlayerApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.label(CURRENT_POSITION.load(Ordering::Relaxed).to_string());
-            ui.label("TRACK:");
-            ui.label(&self.current_title);
-            ui.label(&self.current_artist);
+            ui.heading(CURRENT_POSITION.load(Ordering::Relaxed).to_string());
+            ui.heading("TRACK:");
+            ui.heading(&self.current_title);
+            ui.heading(&self.current_artist);
         });
         ctx.request_repaint_after(Duration::from_millis(12));
     }
@@ -175,7 +175,6 @@ fn prefill_buffer(path: &PathBuf, producer: &mut rtrb::Producer<(f32, f32)>, buf
     }
     println!("Buffer prefilled with {} samples", samples_written);
 }
-
 fn decode_flac(
     path: &mut PathBuf,
     producer: &mut rtrb::Producer<(f32, f32)>,
@@ -185,29 +184,21 @@ fn decode_flac(
     skip_samples: usize,
 ) {
     let mut sample_index = skip_samples * 2;
-    loop {
-        if let Ok(cmd) = cmd_rx.try_recv() {
-            match cmd {
-                PlayerCommand::ChangeSong(new_path) => {
-                    *path = new_path;
-                    sample_index = 0;
-                    continue;
-                }
-            }
-        }
 
+    loop {
         let file = File::open(&path).expect("Failed to open FLAC file");
         let mut reader = FlacReader::new(file).expect("Failed to create FLAC reader");
         let channels = reader.streaminfo().channels as usize;
         let bits_per_sample = reader.streaminfo().bits_per_sample;
         let sample_rate = reader.streaminfo().sample_rate;
+
         if channels != 2 {
             panic!("stereo please");
         }
+
         let title = reader.get_tag("title").next();
         let artist = reader.get_tag("artist").next();
         let album = reader.get_tag("album").next();
-
         meta_tx
             .send(MetaCommand::Metadata(
                 title.unwrap_or("EH").to_owned(),
@@ -219,30 +210,99 @@ fn decode_flac(
         let mut samples = reader.samples().skip(sample_index);
         let mut left_sample = None;
 
-        for sample in samples {
-            while !IS_PLAYING.load(Ordering::Relaxed) {
-                thread::sleep(Duration::from_micros(100));
+        'sample_loop: loop {
+            if let Ok(cmd) = cmd_rx.try_recv() {
+                match cmd {
+                    PlayerCommand::ChangeSong(new_path) => {
+                        let buffer_size = producer.slots();
+                        let silence_samples = (buffer_size / 2) as usize; // Half buffer of silence
+
+                        for _ in 0..silence_samples {
+                            while producer.push((0.0, 0.0)).is_err() {
+                                thread::sleep(Duration::from_micros(10));
+                            }
+                        }
+
+                        *path = new_path;
+                        sample_index = 0;
+                        break 'sample_loop;
+                    }
+                }
             }
+
+            match samples.next() {
+                Some(Ok(sample)) => {
+                    let sample = (sample as f64 * scale_factor) as f32;
+                    let sample = sample.max(-1.0).min(1.0);
+
+                    match left_sample.take() {
+                        None => {
+                            left_sample = Some(sample);
+                            sample_index += 1;
+                        }
+                        Some(left) => {
+                            while producer.push((left, sample)).is_err() {
+                                if let Ok(cmd) = cmd_rx.try_recv() {
+                                    match cmd {
+                                        PlayerCommand::ChangeSong(new_path) => {
+                                            let buffer_size = producer.slots();
+                                            let silence_samples = (buffer_size / 2) as usize;
+
+                                            for _ in 0..silence_samples {
+                                                while producer.push((0.0, 0.0)).is_err() {
+                                                    thread::sleep(Duration::from_micros(10));
+                                                }
+                                            }
+
+                                            *path = new_path;
+                                            sample_index = 0;
+                                            break 'sample_loop;
+                                        }
+                                    }
+                                }
+                                thread::sleep(Duration::from_micros(10));
+                            }
+                            sample_index += 1;
+                        }
+                    }
+                }
+                None => {
+                    sample_index = 0;
+                    break 'sample_loop;
+                }
+                Some(Err(e)) => {
+                    eprintln!("Error reading sample: {:?}", e);
+                    break 'sample_loop;
+                }
+            }
+
             if sample_index % (sample_rate as usize * 2) == 0 {
                 CURRENT_POSITION.store(
                     sample_index as u32 / (2 * sample_rate as u32),
                     Ordering::Relaxed,
                 );
             }
-            let sample = sample.expect("Failed to read sample") as f64 * scale_factor;
-            let sample = sample.max(-1.0).min(1.0) as f32;
 
-            match left_sample.take() {
-                None => {
-                    left_sample = Some(sample);
-                    sample_index += 1;
-                }
-                Some(left) => {
-                    while producer.push((left, sample)).is_err() {
-                        thread::sleep(Duration::from_micros(10));
+            while !IS_PLAYING.load(Ordering::Relaxed) {
+                if let Ok(cmd) = cmd_rx.try_recv() {
+                    match cmd {
+                        PlayerCommand::ChangeSong(new_path) => {
+                            let buffer_size = producer.slots();
+                            let silence_samples = (buffer_size / 2) as usize;
+
+                            for _ in 0..silence_samples {
+                                while producer.push((0.0, 0.0)).is_err() {
+                                    thread::sleep(Duration::from_micros(10));
+                                }
+                            }
+
+                            *path = new_path;
+                            sample_index = 0;
+                            break 'sample_loop;
+                        }
                     }
-                    sample_index += 1;
                 }
+                thread::sleep(Duration::from_micros(100));
             }
         }
     }
