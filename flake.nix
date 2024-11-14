@@ -1,5 +1,5 @@
 {
-  description = "Build a cargo workspace";
+  description = "SVASTIK";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -123,26 +123,26 @@
         # Note that the cargo workspace must define `workspace.members` using wildcards,
         # otherwise, omitting a crate (like we do below) will result in errors since
         # cargo won't be able to find the sources for all members.
-        midi-nats = craneLib.buildPackage (individualCrateArgs // {
-          pname = "midi-nats";
-          cargoExtraArgs = "-p midi-nats";
-          src = fileSetForCrate ./crates/midi-nats;
+        SARASVATI = craneLib.buildPackage (individualCrateArgs // {
+          pname = "SARASVATI";
+          cargoExtraArgs = "-p SARASVATI";
+          src = fileSetForCrate ./crates/SARASVATI;
         });
-        player = craneLib.buildPackage (individualCrateArgs // {
-          pname = "player";
-          cargoExtraArgs = "-p player";
-          src = fileSetForCrate ./crates/player;
+        ANAHATA = craneLib.buildPackage (individualCrateArgs // {
+          pname = "ANAHATA";
+          cargoExtraArgs = "-p ANAHATA";
+          src = fileSetForCrate ./crates/ANAHATA;
         });
 
-        library = craneLib.buildPackage (individualCrateArgs // {
-          pname = "library";
-          cargoExtraArgs = "-p library";
-          src = fileSetForCrate ./crates/library;
+        AKASHA = craneLib.buildPackage (individualCrateArgs // {
+          pname = "AKASHA";
+          cargoExtraArgs = "-p AKASHA";
+          src = fileSetForCrate ./crates/AKASHA;
         });
       in {
         checks = {
           # Build the crates as part of `nix flake check` for convenience
-          inherit midi-nats library player;
+          inherit SARASVATI AKASHA ANAHATA;
 
           # Run clippy (and deny all warnings) on the workspace source,
           # again, reusing the dependency artifacts from above.
@@ -201,16 +201,16 @@
         };
 
         packages = {
-          inherit midi-nats library player;
+          inherit SARASVATI AKASHA ANAHATA;
         } // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
           my-workspace-llvm-coverage = craneLibLLvmTools.cargoLlvmCov
             (commonArgs // { inherit cargoArtifacts; });
         };
 
         apps = {
-          midi-nats = flake-utils.lib.mkApp { drv = midi-nats; };
-          library = flake-utils.lib.mkApp { drv = library; };
-          player = flake-utils.lib.mkApp { drv = player; };
+          SARASVATI = flake-utils.lib.mkApp { drv = SARASVATI; };
+          AKASHA = flake-utils.lib.mkApp { drv = AKASHA; };
+          ANAHATA = flake-utils.lib.mkApp { drv = ANAHATA; };
         };
 
         devShells.default = craneLib.devShell {

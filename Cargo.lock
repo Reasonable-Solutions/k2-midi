@@ -3,6 +3,39 @@
 version = 3
 
 [[package]]
+name = "AKASHA"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "eframe",
+ "egui",
+ "env_logger",
+ "image",
+ "log",
+ "metaflac",
+ "nats",
+ "serde",
+]
+
+[[package]]
+name = "ANAHATA"
+version = "0.1.0"
+dependencies = [
+ "claxon",
+ "crossbeam",
+ "eframe",
+ "egui",
+ "env_logger",
+ "image",
+ "jack",
+ "log",
+ "metaflac",
+ "nats",
+ "rtrb",
+ "serde",
+]
+
+[[package]]
 name = "ab_glyph"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2012,21 +2045,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "library"
-version = "0.1.0"
-dependencies = [
- "crossbeam",
- "eframe",
- "egui",
- "env_logger",
- "image",
- "log",
- "metaflac",
- "nats",
- "serde",
-]
-
-[[package]]
 name = "libredox"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2727,24 +2745,6 @@ name = "pkg-config"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "953ec861398dccce10c670dfeaf3ec4911ca479e9c02154b3a215178c5f566f2"
-
-[[package]]
-name = "player"
-version = "0.1.0"
-dependencies = [
- "claxon",
- "crossbeam",
- "eframe",
- "egui",
- "env_logger",
- "image",
- "jack",
- "log",
- "metaflac",
- "nats",
- "rtrb",
- "serde",
-]
 
 [[package]]
 name = "png"
