@@ -36,6 +36,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "SARASVATI"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "jack",
+ "my-common",
+ "my-workspace-hack",
+ "nats",
+]
+
+[[package]]
 name = "ab_glyph"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2145,17 +2156,6 @@ dependencies = [
  "log",
  "objc",
  "paste",
-]
-
-[[package]]
-name = "midi-nats"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "jack",
- "my-common",
- "my-workspace-hack",
- "nats",
 ]
 
 [[package]]

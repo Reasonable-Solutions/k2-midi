@@ -144,6 +144,15 @@ impl eframe::App for FileSelectorApp {
         ctx.request_repaint_after(Duration::from_millis(12));
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading(
+                    egui::RichText::new("AKASHA") //("आकाश") on hold because egui cant utf8 proper
+                        .size(24.0)
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                );
+            });
+
             ui.horizontal(|ui| {
                 if let Some(selected_file) = self.flac_files.get(self.selected_index) {
                     if let Some(large_art) = &selected_file.large_album_art {

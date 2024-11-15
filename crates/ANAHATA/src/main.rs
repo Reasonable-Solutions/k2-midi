@@ -18,6 +18,7 @@ pub static CURRENT_POSITION: AtomicU32 = AtomicU32::new(0);
 #[derive(Debug)]
 enum PlayerCommand {
     ChangeSong(PathBuf),
+    SkipForward,
 }
 #[derive(Debug)]
 enum MetaCommand {
@@ -53,6 +54,12 @@ impl eframe::App for PlayerApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading(
+                egui::RichText::new("ANAHATA")
+                    .size(50.0)
+                    .strong()
+                    .color(egui::Color32::WHITE),
+            );
             ui.heading(CURRENT_POSITION.load(Ordering::Relaxed).to_string());
             ui.heading("TRACK:");
             ui.heading(&self.current_title);
@@ -62,7 +69,7 @@ impl eframe::App for PlayerApp {
     }
 }
 fn main() {
-    let (client, _status) = Client::new("flac_player", ClientOptions::NO_START_SERVER)
+    let (client, _status) = Client::new("ANAHATA", ClientOptions::NO_START_SERVER)
         .expect("Failed to create JACK client");
     let jack_buffer_size = client.buffer_size();
     let jack_sample_rate = client.sample_rate();
@@ -92,7 +99,6 @@ fn main() {
         decode_flac(
             &mut audio_file_path,
             &mut producer,
-            jack_sample_rate as u32,
             &cmd_rx,
             &meta_tx,
             rtrb_buffer_size as usize,
@@ -175,17 +181,17 @@ fn prefill_buffer(path: &PathBuf, producer: &mut rtrb::Producer<(f32, f32)>, buf
     }
     println!("Buffer prefilled with {} samples", samples_written);
 }
+
 fn decode_flac(
     path: &mut PathBuf,
     producer: &mut rtrb::Producer<(f32, f32)>,
-    output_sample_rate: u32,
     cmd_rx: &Receiver<PlayerCommand>,
     meta_tx: &Sender<MetaCommand>,
     skip_samples: usize,
 ) {
     let mut sample_index = skip_samples * 2;
 
-    loop {
+    'main: loop {
         let file = File::open(&path).expect("Failed to open FLAC file");
         let mut reader = FlacReader::new(file).expect("Failed to create FLAC reader");
         let channels = reader.streaminfo().channels as usize;
@@ -196,9 +202,9 @@ fn decode_flac(
             panic!("stereo please");
         }
 
+        // Send metadata
         let title = reader.get_tag("title").next();
         let artist = reader.get_tag("artist").next();
-        let album = reader.get_tag("album").next();
         meta_tx
             .send(MetaCommand::Metadata(
                 title.unwrap_or("EH").to_owned(),
@@ -210,26 +216,38 @@ fn decode_flac(
         let mut samples = reader.samples().skip(sample_index);
         let mut left_sample = None;
 
-        'sample_loop: loop {
+        loop {
+            // Single command check location
             if let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     PlayerCommand::ChangeSong(new_path) => {
                         let buffer_size = producer.slots();
-                        let silence_samples = (buffer_size / 2) as usize; // Half buffer of silence
-
+                        let silence_samples = (buffer_size / 2) as usize;
                         for _ in 0..silence_samples {
                             while producer.push((0.0, 0.0)).is_err() {
                                 thread::sleep(Duration::from_micros(10));
                             }
                         }
-
                         *path = new_path;
                         sample_index = 0;
-                        break 'sample_loop;
+                        continue 'main;
+                    }
+                    PlayerCommand::SkipForward => {
+                        let skip_samples = (sample_rate * 10) as usize * 2;
+                        sample_index = sample_index.saturating_add(skip_samples);
+                        samples = reader.samples().skip(sample_index);
+                        left_sample = None;
                     }
                 }
             }
 
+            // Only proceed if playing
+            if !IS_PLAYING.load(Ordering::Relaxed) {
+                thread::sleep(Duration::from_micros(100));
+                continue;
+            }
+
+            // Process next sample
             match samples.next() {
                 Some(Ok(sample)) => {
                     let sample = (sample as f64 * scale_factor) as f32;
@@ -242,24 +260,6 @@ fn decode_flac(
                         }
                         Some(left) => {
                             while producer.push((left, sample)).is_err() {
-                                if let Ok(cmd) = cmd_rx.try_recv() {
-                                    match cmd {
-                                        PlayerCommand::ChangeSong(new_path) => {
-                                            let buffer_size = producer.slots();
-                                            let silence_samples = (buffer_size / 2) as usize;
-
-                                            for _ in 0..silence_samples {
-                                                while producer.push((0.0, 0.0)).is_err() {
-                                                    thread::sleep(Duration::from_micros(10));
-                                                }
-                                            }
-
-                                            *path = new_path;
-                                            sample_index = 0;
-                                            break 'sample_loop;
-                                        }
-                                    }
-                                }
                                 thread::sleep(Duration::from_micros(10));
                             }
                             sample_index += 1;
@@ -268,11 +268,11 @@ fn decode_flac(
                 }
                 None => {
                     sample_index = 0;
-                    break 'sample_loop;
+                    continue 'main;
                 }
                 Some(Err(e)) => {
                     eprintln!("Error reading sample: {:?}", e);
-                    break 'sample_loop;
+                    continue 'main;
                 }
             }
 
@@ -281,28 +281,6 @@ fn decode_flac(
                     sample_index as u32 / (2 * sample_rate as u32),
                     Ordering::Relaxed,
                 );
-            }
-
-            while !IS_PLAYING.load(Ordering::Relaxed) {
-                if let Ok(cmd) = cmd_rx.try_recv() {
-                    match cmd {
-                        PlayerCommand::ChangeSong(new_path) => {
-                            let buffer_size = producer.slots();
-                            let silence_samples = (buffer_size / 2) as usize;
-
-                            for _ in 0..silence_samples {
-                                while producer.push((0.0, 0.0)).is_err() {
-                                    thread::sleep(Duration::from_micros(10));
-                                }
-                            }
-
-                            *path = new_path;
-                            sample_index = 0;
-                            break 'sample_loop;
-                        }
-                    }
-                }
-                thread::sleep(Duration::from_micros(100));
             }
         }
     }
@@ -320,7 +298,7 @@ fn control_thread(cmd_tx: Sender<PlayerCommand>) {
     for msg in sub.messages() {
         dbg!(&msg);
         match msg.subject.as_ref() {
-            "xone.library.stop" => {
+            "xone.player.stop" => {
                 if IS_PLAYING.load(Ordering::Relaxed) == true {
                     println!("Received resume command via NATS");
                     IS_PLAYING.store(false, Ordering::Relaxed)
@@ -334,6 +312,12 @@ fn control_thread(cmd_tx: Sender<PlayerCommand>) {
                 let path = PathBuf::from(content.into_owned());
                 cmd_tx
                     .send(PlayerCommand::ChangeSong(path))
+                    .expect("Failed to send command");
+            }
+            "xone.player.1.skipforward" => {
+                println!("SKIPPU");
+                cmd_tx
+                    .send(PlayerCommand::SkipForward)
                     .expect("Failed to send command");
             }
             _ => {}
