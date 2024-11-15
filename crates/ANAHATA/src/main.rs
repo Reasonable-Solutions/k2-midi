@@ -9,7 +9,7 @@ use std::error::Error;
 use std::fs::File;
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 use std::{fs, thread};
 use symphonia::core::audio::SampleBuffer;
@@ -21,6 +21,7 @@ use symphonia::core::probe::Hint;
 
 pub static IS_PLAYING: AtomicBool = AtomicBool::new(true);
 pub static CURRENT_POSITION: AtomicU32 = AtomicU32::new(0);
+pub static DURATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 enum PlayerCommand {
@@ -72,6 +73,11 @@ impl eframe::App for PlayerApp {
                 "-{:02}:{:02}-",
                 CURRENT_POSITION.load(Ordering::Relaxed) / 60,
                 CURRENT_POSITION.load(Ordering::Relaxed) % 60,
+            ));
+            ui.heading(format!(
+                "-{:02}:{:02}-",
+                DURATION.load(Ordering::Relaxed) / 60,
+                DURATION.load(Ordering::Relaxed) % 60,
             ));
 
             ui.heading("TRACK:");
@@ -194,6 +200,17 @@ fn decode_flac(
         let track_id = track.id;
         let sample_rate = track.codec_params.sample_rate.expect("No sample rate");
         let codec_params = track.codec_params.clone();
+
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.sample_rate.is_some() && t.codec_params.n_frames.is_some())
+            .expect("No suitable audio track found");
+
+        let total_samples = track.codec_params.n_frames.unwrap();
+
+        let duration_ms = (total_samples as u64) / sample_rate as u64;
+        DURATION.store(duration_ms, Ordering::Relaxed);
 
         let mut decoder = symphonia::default::get_codecs()
             .make(&codec_params, &DecoderOptions::default())
@@ -321,7 +338,6 @@ fn send_metadata(
         .find(|tag| tag.std_key == Some(symphonia::core::meta::StandardTagKey::Artist))
         .map(|tag| tag.value.to_string())
         .unwrap_or("AH".to_owned());
-
     meta_tx
         .send(MetaCommand::Metadata(title, artist))
         .expect("Failed to send metadata");
