@@ -1,16 +1,23 @@
-use claxon::metadata;
-use claxon::FlacReader;
 use crossbeam::channel::{bounded, Receiver, Sender};
 use eframe::egui;
 use egui::*;
 use jack::{AudioOut, Client, ClientOptions, Control, ProcessScope};
+use memmap2::Mmap;
 use nats;
 use rtrb::RingBuffer;
+use std::error::Error;
 use std::fs::File;
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 use std::{fs, thread};
+use symphonia::core::audio::SampleBuffer;
+use symphonia::core::codecs::{Decoder, DecoderOptions};
+use symphonia::core::formats::{FormatOptions, FormatReader};
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
 
 pub static IS_PLAYING: AtomicBool = AtomicBool::new(true);
 pub static CURRENT_POSITION: AtomicU32 = AtomicU32::new(0);
@@ -19,6 +26,7 @@ pub static CURRENT_POSITION: AtomicU32 = AtomicU32::new(0);
 enum PlayerCommand {
     ChangeSong(PathBuf),
     SkipForward,
+    SkipBackward,
 }
 #[derive(Debug)]
 enum MetaCommand {
@@ -93,8 +101,6 @@ fn main() {
 
     let mut audio_file_path = PathBuf::from("./music/psy.flac");
 
-    prefill_buffer(&audio_file_path, &mut producer, rtrb_buffer_size as usize);
-
     thread::spawn(move || {
         decode_flac(
             &mut audio_file_path,
@@ -151,37 +157,6 @@ fn main() {
         .expect("Failed to deactivate client");
 }
 
-fn prefill_buffer(path: &PathBuf, producer: &mut rtrb::Producer<(f32, f32)>, buffer_size: usize) {
-    let file = File::open(path).expect("Failed to open FLAC file");
-    let mut reader = FlacReader::new(file).expect("Failed to create FLAC reader");
-    let bits_per_sample = reader.streaminfo().bits_per_sample;
-    let scale_factor = 1.0 / (1_i32 << (bits_per_sample - 1)) as f64;
-
-    let mut left_sample = None;
-    let mut samples_written = 0;
-
-    for sample in reader.samples() {
-        if samples_written >= buffer_size {
-            break;
-        }
-
-        let sample = sample.expect("Failed to read sample") as f64 * scale_factor;
-        let sample = sample.max(-1.0).min(1.0) as f32;
-
-        match left_sample.take() {
-            None => {
-                left_sample = Some(sample);
-            }
-            Some(left) => {
-                if producer.push((left, sample)).is_ok() {
-                    samples_written += 1;
-                }
-            }
-        }
-    }
-    println!("Buffer prefilled with {} samples", samples_written);
-}
-
 fn decode_flac(
     path: &mut PathBuf,
     producer: &mut rtrb::Producer<(f32, f32)>,
@@ -189,101 +164,194 @@ fn decode_flac(
     meta_tx: &Sender<MetaCommand>,
     skip_samples: usize,
 ) {
-    let mut sample_index = skip_samples * 2;
+    let mut sample_index = skip_samples;
 
     'main: loop {
-        let file = File::open(&path).expect("Failed to open FLAC file");
-        let mut reader = FlacReader::new(file).expect("Failed to create FLAC reader");
-        let channels = reader.streaminfo().channels as usize;
-        let bits_per_sample = reader.streaminfo().bits_per_sample;
-        let sample_rate = reader.streaminfo().sample_rate;
+        let file = File::open(&path).expect("Failed to open file");
+        let mmap = unsafe { Mmap::map(&file) }.expect("Failed to mmap file");
+        let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(mmap)), Default::default());
 
-        if channels != 2 {
-            panic!("stereo please");
+        let mut hint = Hint::new();
+        hint.with_extension("flac");
+
+        let probed = symphonia::default::get_probe()
+            .format(
+                &hint,
+                mss,
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            )
+            .expect("Failed to probe media");
+
+        let mut format = probed.format;
+        let track = format.default_track().expect("No default track");
+        let track_id = track.id;
+        let sample_rate = track.codec_params.sample_rate.expect("No sample rate");
+        let codec_params = track.codec_params.clone();
+
+        let mut decoder = symphonia::default::get_codecs()
+            .make(&codec_params, &DecoderOptions::default())
+            .expect("Failed to create decoder");
+
+        if let Some(metadata) = format.metadata().current() {
+            send_metadata(metadata, meta_tx);
         }
 
-        // Send metadata
-        let title = reader.get_tag("title").next();
-        let artist = reader.get_tag("artist").next();
-        meta_tx
-            .send(MetaCommand::Metadata(
-                title.unwrap_or("EH").to_owned(),
-                artist.unwrap_or("AH").to_owned(),
-            ))
-            .expect("Failed to send metadata");
-
-        let scale_factor = 1.0 / (1_i32 << (bits_per_sample - 1)) as f64;
-        let mut samples = reader.samples().skip(sample_index);
-        let mut left_sample = None;
+        if skip_samples > 0 {
+            format
+                .seek(
+                    symphonia::core::formats::SeekMode::Accurate,
+                    symphonia::core::formats::SeekTo::TimeStamp {
+                        ts: skip_samples as u64,
+                        track_id,
+                    },
+                )
+                .expect("Failed to seek");
+        }
 
         loop {
-            // Single command check location
             if let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     PlayerCommand::ChangeSong(new_path) => {
-                        let buffer_size = producer.slots();
-                        let silence_samples = (buffer_size / 2) as usize;
-                        for _ in 0..silence_samples {
-                            while producer.push((0.0, 0.0)).is_err() {
-                                thread::sleep(Duration::from_micros(10));
-                            }
-                        }
+                        fill_silence_buffer(producer);
                         *path = new_path;
                         sample_index = 0;
                         continue 'main;
                     }
                     PlayerCommand::SkipForward => {
-                        let skip_samples = (sample_rate * 10) as usize * 2;
-                        sample_index = sample_index.saturating_add(skip_samples);
-                        samples = reader.samples().skip(sample_index);
-                        left_sample = None;
+                        let skip_to = sample_index + (sample_rate * 10) as usize;
+                        format
+                            .seek(
+                                symphonia::core::formats::SeekMode::Coarse, // Changed from Accurate
+                                symphonia::core::formats::SeekTo::TimeStamp {
+                                    ts: skip_to as u64,
+                                    track_id,
+                                },
+                            )
+                            .expect("Failed to seek");
+                        sample_index = skip_to;
+                        decoder = symphonia::default::get_codecs()
+                            .make(
+                                &codec_params,
+                                &DecoderOptions {
+                                    verify: false,
+                                    ..Default::default()
+                                },
+                            )
+                            .expect("Failed to create decoder");
+                        fill_silence_buffer(producer);
+                        continue;
+                    }
+                    PlayerCommand::SkipBackward => {
+                        let skip_to = sample_index.saturating_sub((sample_rate * 10) as usize);
+                        format
+                            .seek(
+                                symphonia::core::formats::SeekMode::Coarse,
+                                symphonia::core::formats::SeekTo::TimeStamp {
+                                    ts: skip_to as u64,
+                                    track_id,
+                                },
+                            )
+                            .expect("Failed to seek");
+                        sample_index = skip_to;
+                        decoder = symphonia::default::get_codecs()
+                            .make(
+                                &codec_params,
+                                &DecoderOptions {
+                                    verify: false,
+                                    ..Default::default()
+                                },
+                            )
+                            .expect("Failed to create decoder");
+                        fill_silence_buffer(producer);
+                        continue;
                     }
                 }
             }
 
-            // Only proceed if playing
             if !IS_PLAYING.load(Ordering::Relaxed) {
                 thread::sleep(Duration::from_micros(100));
                 continue;
             }
 
-            // Process next sample
-            match samples.next() {
-                Some(Ok(sample)) => {
-                    let sample = (sample as f64 * scale_factor) as f32;
-                    let sample = sample.max(-1.0).min(1.0);
-
-                    match left_sample.take() {
-                        None => {
-                            left_sample = Some(sample);
-                            sample_index += 1;
-                        }
-                        Some(left) => {
-                            while producer.push((left, sample)).is_err() {
-                                thread::sleep(Duration::from_micros(10));
-                            }
-                            sample_index += 1;
-                        }
-                    }
-                }
-                None => {
-                    sample_index = 0;
-                    continue 'main;
-                }
-                Some(Err(e)) => {
-                    eprintln!("Error reading sample: {:?}", e);
-                    continue 'main;
-                }
-            }
-
-            if sample_index % (sample_rate as usize * 2) == 0 {
-                CURRENT_POSITION.store(
-                    sample_index as u32 / (2 * sample_rate as u32),
-                    Ordering::Relaxed,
-                );
+            match process_next_packet(
+                &mut format,
+                &mut decoder,
+                producer,
+                sample_rate,
+                &mut sample_index,
+            ) {
+                Ok(()) => continue,
+                Err(_) => continue 'main,
             }
         }
     }
+}
+
+fn perform_seek(format: &mut Box<dyn FormatReader>, ts: u64, track_id: u32) {
+    format
+        .seek(
+            symphonia::core::formats::SeekMode::Accurate,
+            symphonia::core::formats::SeekTo::TimeStamp { ts, track_id },
+        )
+        .expect("Failed to seek");
+}
+
+fn send_metadata(
+    metadata: &symphonia::core::meta::MetadataRevision,
+    meta_tx: &Sender<MetaCommand>,
+) {
+    let title = metadata
+        .tags()
+        .iter()
+        .find(|tag| tag.std_key == Some(symphonia::core::meta::StandardTagKey::TrackTitle))
+        .map(|tag| tag.value.to_string())
+        .unwrap_or("EH".to_owned());
+
+    let artist = metadata
+        .tags()
+        .iter()
+        .find(|tag| tag.std_key == Some(symphonia::core::meta::StandardTagKey::Artist))
+        .map(|tag| tag.value.to_string())
+        .unwrap_or("AH".to_owned());
+
+    meta_tx
+        .send(MetaCommand::Metadata(title, artist))
+        .expect("Failed to send metadata");
+}
+
+fn fill_silence_buffer(producer: &mut rtrb::Producer<(f32, f32)>) {
+    let buffer_size = producer.slots();
+    let silence_samples = (buffer_size / 2) as usize;
+    for _ in 0..silence_samples {
+        while producer.push((0.0, 0.0)).is_err() {
+            thread::sleep(Duration::from_micros(10));
+        }
+    }
+}
+
+fn process_next_packet(
+    format: &mut Box<dyn FormatReader>,
+    decoder: &mut Box<dyn Decoder>,
+    producer: &mut rtrb::Producer<(f32, f32)>,
+    sample_rate: u32,
+    sample_index: &mut usize,
+) -> Result<(), Box<dyn Error>> {
+    let packet = format.next_packet()?;
+    CURRENT_POSITION.store((packet.ts() / sample_rate as u64) as u32, Ordering::Relaxed);
+
+    let decoded = decoder.decode(&packet)?;
+    let mut sample_buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
+    sample_buffer.copy_interleaved_ref(decoded);
+
+    for chunk in sample_buffer.samples().chunks_exact(2) {
+        while producer.push((chunk[0], chunk[1])).is_err() {
+            thread::sleep(Duration::from_micros(10));
+        }
+        *sample_index += 1;
+    }
+
+    Ok(())
 }
 
 fn control_thread(cmd_tx: Sender<PlayerCommand>) {
@@ -320,6 +388,13 @@ fn control_thread(cmd_tx: Sender<PlayerCommand>) {
                     .send(PlayerCommand::SkipForward)
                     .expect("Failed to send command");
             }
+            "xone.player.1.skipbackward" => {
+                println!("SKIPPU");
+                cmd_tx
+                    .send(PlayerCommand::SkipBackward)
+                    .expect("Failed to send command");
+            }
+
             _ => {}
         }
     }

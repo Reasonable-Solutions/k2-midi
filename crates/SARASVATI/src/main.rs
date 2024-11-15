@@ -79,10 +79,26 @@ fn run_nats(
             }
             XoneMessage::Button { id, pressed } => {
                 println!("BUTTON {}", id);
-                if id == 14 {
-                    print!("select button pressed");
-                    let _ = nc.publish("xone.library", format!("Select",));
+
+                match id {
+                    14 => {
+                        println!("select button pressed");
+                        let _ = nc.publish("xone.library", "Select");
+                    }
+                    25 => {
+                        if pressed {
+                            nc.publish("xone.player.1.skipbackward", "na");
+                        }
+                    }
+
+                    26 => {
+                        if pressed {
+                            nc.publish("xone.player.1.skipforward", "na");
+                        }
+                    }
+                    _ => {}
                 }
+
                 let _ = nc.publish("xone.button", format!("{},{}", id, pressed));
             }
             XoneMessage::Knob { id, value } => {
