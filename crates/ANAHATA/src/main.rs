@@ -68,7 +68,12 @@ impl eframe::App for PlayerApp {
                     .strong()
                     .color(egui::Color32::WHITE),
             );
-            ui.heading(CURRENT_POSITION.load(Ordering::Relaxed).to_string());
+            ui.heading(format!(
+                "-{:02}:{:02}-",
+                CURRENT_POSITION.load(Ordering::Relaxed) / 60,
+                CURRENT_POSITION.load(Ordering::Relaxed) % 60,
+            ));
+
             ui.heading("TRACK:");
             ui.heading(&self.current_title);
             ui.heading(&self.current_artist);
@@ -76,6 +81,7 @@ impl eframe::App for PlayerApp {
         ctx.request_repaint_after(Duration::from_millis(12));
     }
 }
+
 fn main() {
     let (client, _status) = Client::new("ANAHATA", ClientOptions::NO_START_SERVER)
         .expect("Failed to create JACK client");
@@ -86,7 +92,7 @@ fn main() {
         jack_buffer_size, jack_sample_rate
     );
 
-    let rtrb_buffer_size = jack_buffer_size * 32;
+    let rtrb_buffer_size = jack_buffer_size * 2;
     let (mut producer, mut consumer) = RingBuffer::<(f32, f32)>::new(rtrb_buffer_size as usize);
 
     let (cmd_tx, cmd_rx) = bounded::<PlayerCommand>(32);
@@ -218,11 +224,12 @@ fn decode_flac(
                         sample_index = 0;
                         continue 'main;
                     }
+
                     PlayerCommand::SkipForward => {
                         let skip_to = sample_index + (sample_rate * 10) as usize;
                         format
                             .seek(
-                                symphonia::core::formats::SeekMode::Coarse, // Changed from Accurate
+                                symphonia::core::formats::SeekMode::Coarse,
                                 symphonia::core::formats::SeekTo::TimeStamp {
                                     ts: skip_to as u64,
                                     track_id,
@@ -239,9 +246,9 @@ fn decode_flac(
                                 },
                             )
                             .expect("Failed to create decoder");
-                        fill_silence_buffer(producer);
                         continue;
                     }
+
                     PlayerCommand::SkipBackward => {
                         let skip_to = sample_index.saturating_sub((sample_rate * 10) as usize);
                         format
@@ -338,6 +345,7 @@ fn process_next_packet(
     sample_index: &mut usize,
 ) -> Result<(), Box<dyn Error>> {
     let packet = format.next_packet()?;
+
     CURRENT_POSITION.store((packet.ts() / sample_rate as u64) as u32, Ordering::Relaxed);
 
     let decoded = decoder.decode(&packet)?;
