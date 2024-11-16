@@ -92,11 +92,10 @@ impl PlayerApp {
             let dt = now.duration_since(self.last_update).as_secs_f32();
             self.last_update = now;
 
-            // Smoothly interpolate towards target position
-            let animation_speed = 10.0; // Adjust this to control smoothness
+            // interpolate
+            let animation_speed = 10.0;
             self.smooth_offset += (target_bin - self.smooth_offset) * (animation_speed * dt);
 
-            let current_bin = self.smooth_offset as usize;
             for (i, &(left, right)) in self.waveform.iter().enumerate() {
                 let bin_offset = i as f32 - self.smooth_offset;
                 let x = playhead_x + (bin_offset * width_per_bin);
