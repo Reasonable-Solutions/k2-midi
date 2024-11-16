@@ -19,11 +19,8 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
-pub static ANAHATA_NO: AtomicU32 = AtomicU32::new(0);
-pub static IS_PLAYING: AtomicBool = AtomicBool::new(true);
-pub static CURRENT_POSITION: AtomicU64 = AtomicU64::new(0);
-pub static DURATION: AtomicU64 = AtomicU64::new(0);
-pub static PLAYHEAD: AtomicU64 = AtomicU64::new(0);
+mod globals;
+use crate::globals::*;
 
 #[derive(Debug)]
 enum PlayerCommand {
@@ -191,13 +188,8 @@ fn main() {
         .register_port("out_right", AudioOut::default())
         .expect("Failed to create right output port");
 
-    let mut audio_file_path = PathBuf::from("./music/psy.flac");
+    let mut song = Vec::new();
 
-    let start_time = Instant::now();
-    let mut song = decode_flac_to_vec(&audio_file_path, &meta_tx);
-    let elapsed_time = start_time.elapsed();
-    println!("Decoding time: {:?}", elapsed_time);
-    println!("LEN: {:?}", song.len());
     thread::spawn(move || {
         playback_thread(producer, song, &meta_tx, cmd_rx);
     });
@@ -278,7 +270,6 @@ fn control_thread(cmd_tx: Sender<PlayerCommand>) {
     println!("Control thread started, listening for NATS messages");
 
     for msg in sub.messages() {
-        dbg!(&msg);
         match msg.subject.as_ref() {
             "xone.player.stop" => {
                 if IS_PLAYING.load(Ordering::Relaxed) == true {
