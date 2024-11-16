@@ -3,18 +3,16 @@ use eframe::egui;
 use jack::{AudioOut, Client, ClientOptions, Control, ProcessScope};
 use memmap2::Mmap;
 use nats;
-use nats::kv;
-use procfs::process::all_processes;
 use rayon::prelude::*;
 use rtrb::RingBuffer;
 use std::fs::File;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
+use std::thread;
 use std::time::{Duration, Instant};
-use std::{fs, thread};
-use symphonia::core::audio::{AudioBuffer, AudioBufferRef, SampleBuffer, Signal};
-use symphonia::core::codecs::{CodecRegistry, Decoder, DecoderOptions};
-use symphonia::core::formats::{FormatOptions, FormatReader};
+use symphonia::core::audio::{AudioBufferRef, Signal};
+use symphonia::core::codecs::DecoderOptions;
+use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
@@ -39,6 +37,8 @@ struct PlayerApp {
     current_artist: String,
     waveform: Vec<(f32, f32)>,
     meta_rx: Receiver<MetaCommand>,
+    smooth_offset: f32,
+    last_update: std::time::Instant,
 }
 
 impl PlayerApp {
@@ -48,10 +48,12 @@ impl PlayerApp {
             current_artist: String::from("Unknown"),
             waveform: Vec::new(),
             meta_rx,
+            smooth_offset: 0.0,
+            last_update: std::time::Instant::now(),
         }
     }
 
-    fn draw_waveform(&self, ui: &mut egui::Ui) {
+    fn draw_waveform(&mut self, ui: &mut egui::Ui) {
         let waveform_height = 100.0;
         let waveform_response = ui.allocate_response(
             egui::vec2(ui.available_width(), waveform_height),
@@ -64,10 +66,20 @@ impl PlayerApp {
 
             let width_per_bin = rect.width() / self.waveform.len() as f32;
             let playhead_x = rect.center().x;
-
-            let current_bin = (CURRENT_POSITION.load(Ordering::Relaxed) as f32
+            let target_bin = (CURRENT_POSITION.load(Ordering::Relaxed) as f32
                 / DURATION.load(Ordering::Relaxed) as f32
-                * self.waveform.len() as f32) as usize;
+                * self.waveform.len() as f32) as f32;
+
+            // Smooth animation
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(self.last_update).as_secs_f32();
+            self.last_update = now;
+
+            // Smoothly interpolate towards target position
+            let animation_speed = 10.0; // Adjust this to control smoothness
+            self.smooth_offset += (target_bin - self.smooth_offset) * (animation_speed * dt);
+
+            let current_bin = self.smooth_offset as usize;
 
             for (i, &(left, right)) in self.waveform.iter().enumerate() {
                 let bin_offset = i as i32 - current_bin as i32;
@@ -102,15 +114,14 @@ impl PlayerApp {
 
             if waveform_response.dragged() {
                 let drag_delta = waveform_response.drag_delta();
+                let bins_delta = drag_delta.x / width_per_bin;
+                self.smooth_offset -= bins_delta;
+
                 let time_per_bin =
                     DURATION.load(Ordering::Relaxed) as f32 / self.waveform.len() as f32;
-                let bins_delta = drag_delta.x / width_per_bin;
-                let time_delta = -bins_delta * time_per_bin; // Negative because dragging left should move forward
+                let new_pos = ((self.smooth_offset as f32 * time_per_bin) as u64)
+                    .clamp(0, DURATION.load(Ordering::Relaxed));
 
-                let new_pos = (CURRENT_POSITION.load(Ordering::Relaxed) as f32 + time_delta) as u64;
-                let new_pos = new_pos.clamp(0, DURATION.load(Ordering::Relaxed));
-
-                // Convert position to samples and seek
                 let new_samples = ((new_pos as f64 / 1000.0) * 48000.0) as u64;
                 PLAYHEAD.store(new_samples, Ordering::Relaxed);
                 CURRENT_POSITION.store(new_pos, Ordering::Relaxed);
@@ -141,7 +152,7 @@ fn playback_thread(
                 song = decode_flac_to_vec(&path, meta_tx);
 
                 let wf = generate_stereo_waveform(&song, 2000);
-                meta_tx.send(MetaCommand::Waveform(wf));
+                let _ = meta_tx.send(MetaCommand::Waveform(wf));
 
                 let total_samples = song.len() as f64;
                 let duration_ms = (total_samples * MS_PER_SAMPLE) as u64;
@@ -343,9 +354,7 @@ fn send_metadata(
 fn control_thread(cmd_tx: Sender<PlayerCommand>) {
     let nc = nats::connect("nats://localhost:4222").expect("Failed to connect to NATS");
 
-    let sub = nc
-        .subscribe("xone.>")
-        .expect("Failed to subscribe to stop topic");
+    let sub = nc.subscribe("xone.>").expect("Failed to subscribe topic");
 
     println!("Control thread started, listening for NATS messages");
 
@@ -368,13 +377,11 @@ fn control_thread(cmd_tx: Sender<PlayerCommand>) {
                     .expect("Failed to send command");
             }
             "xone.player.1.skipforward" => {
-                println!("SKIPPU");
                 cmd_tx
                     .send(PlayerCommand::SkipForward)
                     .expect("Failed to send command");
             }
             "xone.player.1.skipbackward" => {
-                println!("SKIPPU");
                 cmd_tx
                     .send(PlayerCommand::SkipBackward)
                     .expect("Failed to send command");
@@ -545,7 +552,7 @@ fn generate_stereo_waveform(song: &Vec<(f32, f32)>, num_bins: usize) -> Vec<(f32
                     (acc.0.max(l.abs()), acc.1.max(r.abs()))
                 })
         } else {
-            // Pad with zeros for any bins past the end of the song
+            // Pad with zeros
             (0.0, 0.0)
         };
 
