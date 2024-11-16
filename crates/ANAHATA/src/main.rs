@@ -31,11 +31,13 @@ enum PlayerCommand {
 #[derive(Debug)]
 enum MetaCommand {
     Metadata(String, String),
+    Waveform(Vec<(f32, f32)>),
 }
 
 struct PlayerApp {
     current_title: String,
     current_artist: String,
+    waveform: Vec<(f32, f32)>,
     meta_rx: Receiver<MetaCommand>,
 }
 
@@ -44,7 +46,75 @@ impl PlayerApp {
         Self {
             current_title: String::from("Unknown"),
             current_artist: String::from("Unknown"),
+            waveform: Vec::new(),
             meta_rx,
+        }
+    }
+
+    fn draw_waveform(&self, ui: &mut egui::Ui) {
+        let waveform_height = 100.0;
+        let waveform_response = ui.allocate_response(
+            egui::vec2(ui.available_width(), waveform_height),
+            egui::Sense::drag(),
+        );
+
+        if !self.waveform.is_empty() {
+            let rect = waveform_response.rect;
+            let painter = ui.painter();
+
+            let width_per_bin = rect.width() / self.waveform.len() as f32;
+            let playhead_x = rect.center().x;
+
+            let current_bin = (CURRENT_POSITION.load(Ordering::Relaxed) as f32
+                / DURATION.load(Ordering::Relaxed) as f32
+                * self.waveform.len() as f32) as usize;
+
+            for (i, &(left, right)) in self.waveform.iter().enumerate() {
+                let bin_offset = i as i32 - current_bin as i32;
+                let x = playhead_x + (bin_offset as f32 * width_per_bin);
+
+                if x >= rect.left() && x <= rect.right() {
+                    // Left channel (top half)
+                    let left_y_top = rect.center().y;
+                    let left_y_bottom = left_y_top - (left * waveform_height * 0.45);
+                    painter.line_segment(
+                        [egui::pos2(x, left_y_top), egui::pos2(x, left_y_bottom)],
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 155, 100)),
+                    );
+
+                    // Right channel (bottom half)
+                    let right_y_top = rect.center().y;
+                    let right_y_bottom = right_y_top + (right * waveform_height * 0.45);
+                    painter.line_segment(
+                        [egui::pos2(x, right_y_top), egui::pos2(x, right_y_bottom)],
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(155, 100, 100)),
+                    );
+                }
+            }
+
+            painter.line_segment(
+                [
+                    egui::pos2(playhead_x, rect.top()),
+                    egui::pos2(playhead_x, rect.bottom()),
+                ],
+                egui::Stroke::new(2.0, egui::Color32::WHITE),
+            );
+
+            if waveform_response.dragged() {
+                let drag_delta = waveform_response.drag_delta();
+                let time_per_bin =
+                    DURATION.load(Ordering::Relaxed) as f32 / self.waveform.len() as f32;
+                let bins_delta = drag_delta.x / width_per_bin;
+                let time_delta = -bins_delta * time_per_bin; // Negative because dragging left should move forward
+
+                let new_pos = (CURRENT_POSITION.load(Ordering::Relaxed) as f32 + time_delta) as u64;
+                let new_pos = new_pos.clamp(0, DURATION.load(Ordering::Relaxed));
+
+                // Convert position to samples and seek
+                let new_samples = ((new_pos as f64 / 1000.0) * 48000.0) as u64;
+                PLAYHEAD.store(new_samples, Ordering::Relaxed);
+                CURRENT_POSITION.store(new_pos, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -70,6 +140,12 @@ fn playback_thread(
 
                 song = decode_flac_to_vec(&path, meta_tx);
 
+                let wf = generate_stereo_waveform(&song, 2000);
+                meta_tx.send(MetaCommand::Waveform(wf));
+
+                let total_samples = song.len() as f64;
+                let duration_ms = (total_samples * MS_PER_SAMPLE) as u64;
+                DURATION.store(duration_ms, Ordering::Relaxed);
                 IS_PLAYING.store(true, Ordering::Relaxed);
             }
             Ok(PlayerCommand::SkipForward) => {
@@ -96,7 +172,7 @@ fn playback_thread(
                 let ms_position = (new_pos as f64 * MS_PER_SAMPLE) as u64;
                 CURRENT_POSITION.store(ms_position, Ordering::Relaxed);
             }
-            _ => {} // Handle other commands as before
+            _ => {}
         }
 
         if IS_PLAYING.load(Ordering::Relaxed) {
@@ -135,6 +211,7 @@ impl eframe::App for PlayerApp {
                     self.current_title = title;
                     self.current_artist = artist;
                 }
+                MetaCommand::Waveform(wf) => self.waveform = wf,
             }
         }
 
@@ -146,6 +223,9 @@ impl eframe::App for PlayerApp {
                     .strong()
                     .color(egui::Color32::WHITE),
             );
+
+            self.draw_waveform(ui);
+
             ui.heading(format!(
                 "-{:02}:{:02}-",
                 CURRENT_POSITION.load(Ordering::Relaxed) / 60,
@@ -443,4 +523,34 @@ fn decode_audio_buffer(decoded: AudioBufferRef<'_>, decoded_samples: &mut Vec<(f
             }
         }
     }
+}
+
+fn generate_stereo_waveform(song: &Vec<(f32, f32)>, num_bins: usize) -> Vec<(f32, f32)> {
+    if song.is_empty() {
+        return vec![];
+    }
+
+    let samples_per_bin = (song.len() + num_bins - 1) / num_bins;
+    let mut waveform = Vec::with_capacity(num_bins);
+
+    for bin in 0..num_bins {
+        let chunk_start = bin * samples_per_bin;
+        let chunk_end = (chunk_start + samples_per_bin).min(song.len());
+
+        // Find max amplitude for left and right channels separately
+        let max_amplitudes = if chunk_start < song.len() {
+            song[chunk_start..chunk_end]
+                .iter()
+                .fold((0.0f32, 0.0f32), |acc, &(l, r)| {
+                    (acc.0.max(l.abs()), acc.1.max(r.abs()))
+                })
+        } else {
+            // Pad with zeros for any bins past the end of the song
+            (0.0, 0.0)
+        };
+
+        waveform.push(max_amplitudes);
+    }
+
+    waveform
 }

@@ -82,8 +82,10 @@ fn run_nats(
 
                 match id {
                     14 => {
-                        println!("select button pressed");
-                        let _ = nc.publish("xone.library", "Select");
+                        if pressed {
+                            println!("select button pressed");
+                            let _ = nc.publish("xone.library", "Select");
+                        }
                     }
                     25 => {
                         if pressed {
