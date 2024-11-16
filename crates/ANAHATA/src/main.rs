@@ -52,7 +52,24 @@ impl PlayerApp {
             last_update: std::time::Instant::now(),
         }
     }
-
+    fn amplitude_to_color(amplitude: f32) -> egui::Color32 {
+        let amp = amplitude.clamp(0.0, 1.0);
+        if amp < 0.5 {
+            let t = amp * 2.0;
+            egui::Color32::from_rgb(
+                (68.0 + t * 54.0) as u8,
+                (1.0 + t * 135.0) as u8,
+                (84.0 + t * 47.0) as u8,
+            )
+        } else {
+            let t = (amp - 0.5) * 2.0;
+            egui::Color32::from_rgb(
+                (122.0 + t * 131.0) as u8,
+                (136.0 + t * 87.0) as u8,
+                (131.0 - t * 109.0) as u8,
+            )
+        }
+    }
     fn draw_waveform(&mut self, ui: &mut egui::Ui) {
         let waveform_height = 100.0;
         let waveform_response = ui.allocate_response(
@@ -80,26 +97,27 @@ impl PlayerApp {
             self.smooth_offset += (target_bin - self.smooth_offset) * (animation_speed * dt);
 
             let current_bin = self.smooth_offset as usize;
-
             for (i, &(left, right)) in self.waveform.iter().enumerate() {
-                let bin_offset = i as i32 - current_bin as i32;
-                let x = playhead_x + (bin_offset as f32 * width_per_bin);
+                let bin_offset = i as f32 - self.smooth_offset;
+                let x = playhead_x + (bin_offset * width_per_bin);
 
                 if x >= rect.left() && x <= rect.right() {
                     // Left channel (top half)
                     let left_y_top = rect.center().y;
                     let left_y_bottom = left_y_top - (left * waveform_height * 0.45);
+                    let left_color = Self::amplitude_to_color(left);
                     painter.line_segment(
                         [egui::pos2(x, left_y_top), egui::pos2(x, left_y_bottom)],
-                        egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 155, 100)),
+                        egui::Stroke::new(1.0, left_color),
                     );
 
                     // Right channel (bottom half)
                     let right_y_top = rect.center().y;
                     let right_y_bottom = right_y_top + (right * waveform_height * 0.45);
+                    let right_color = Self::amplitude_to_color(right);
                     painter.line_segment(
                         [egui::pos2(x, right_y_top), egui::pos2(x, right_y_bottom)],
-                        egui::Stroke::new(1.0, egui::Color32::from_rgb(155, 100, 100)),
+                        egui::Stroke::new(1.0, right_color),
                     );
                 }
             }
