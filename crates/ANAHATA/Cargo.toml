@@ -11,11 +11,14 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 env_logger = "0.11"
 crossbeam = "0.8.4"
-nats = "0.25.0"
 metaflac = "0.2.7"
 image = { version = "0.25.5", default-features = false, features = ["jpeg"] }
 rtrb = "0.3.1"
 jack = "0.13.0"
 claxon = "0.4.3"
 memmap2 = "0.9.5"
-symphonia = "0.5.4"
+rubato = "0.16.1"
+rayon = "1.10.0"
+nats = { version = "0.25.0", features = ["unstable"] }
+symphonia = { version = "0.5.4", default-features = false, features = ["flac"]}
+procfs = "0.17.0"

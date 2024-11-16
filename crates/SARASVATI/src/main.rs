@@ -78,7 +78,7 @@ fn run_nats(
                 }
             }
             XoneMessage::Button { id, pressed } => {
-                println!("BUTTON {}", id);
+                println!("BUTTON {}-{}", id, pressed);
 
                 match id {
                     14 => {

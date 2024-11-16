@@ -36,7 +36,9 @@
         "nixpkgs": [
           "nixpkgs"
         ],
-        "rust-analyzer-src": []
+        "rust-analyzer-src": [
+          "nixpkgs"
+        ]
       },
       "locked": {
         "lastModified": 1730356297,
