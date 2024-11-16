@@ -45,6 +45,8 @@ name = "SARASVATI"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "eframe",
+ "egui",
  "jack",
  "my-common",
  "my-workspace-hack",

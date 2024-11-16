@@ -1,30 +1,60 @@
 use crossbeam_channel::{bounded, Receiver, Sender};
 use nats;
 mod xonek2;
+use eframe::egui;
 use jack::{Client, PortFlags};
 use std::{error::Error, vec};
 use xonek2::*;
 
+struct SarasvatiApp {}
+
+impl Default for SarasvatiApp {
+    fn default() -> Self {
+        Self {}
+    }
+}
+
+impl eframe::App for SarasvatiApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading(
+                egui::RichText::new("SARASVATI")
+                    .size(50.0)
+                    .strong()
+                    .color(egui::Color32::WHITE),
+            );
+        });
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     println!("Scanning for MIDI devices...");
     list_midi_ports_jack()?;
+    let (nats_tx, nats_rx) = bounded(100);
+    let (xone_tx, xone_rx) = bounded(100);
 
-    let (nats_tx, nats_rx) = bounded(100); // Channel for sending to NATS
-    let (xone_tx, xone_rx) = bounded(100); // Channel for receiving from NATS
-
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            if let Err(e) = run_nats(xone_tx, nats_rx) {
-                eprintln!("NATS error: {}", e);
-            }
-        });
-
-        println!("Initializing XoneK2...");
-        let k2 = XoneK2::new("XONE:K2", nats_tx, xone_rx);
-        dbg!(&k2);
-
-        std::thread::park();
+    // Spawn NATS thread
+    std::thread::spawn(move || {
+        if let Err(e) = run_nats(xone_tx, nats_rx) {
+            eprintln!("NATS error: {}", e);
+        }
     });
+
+    std::thread::spawn(move || {
+        println!("Initializing XoneK2...");
+        let k2 = XoneK2::new("XONE:K2", nats_tx.clone(), xone_rx.clone());
+    });
+
+    let options = eframe::NativeOptions {
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "SARASVATI",
+        options,
+        Box::new(|_cc| Ok(Box::new(SarasvatiApp {}))),
+    )
+    .expect("Failed to start GUI");
 
     Ok(())
 }
