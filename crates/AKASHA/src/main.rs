@@ -18,10 +18,11 @@ use std::{fs, thread};
 enum UiMessage {
     Increment,
     Decrement,
-    Select,
+    Select(u32),
 }
 
 struct SelectMessage {
+    player: u32,
     file_path: String,
 }
 
@@ -44,23 +45,40 @@ fn main() {
 
     thread::spawn(move || {
         for message in nats_client_for_thread
-            .subscribe("xone.library")
+            .subscribe("akasha.>")
             .unwrap()
             .messages()
         {
+            dbg!(&message);
+            // First check if it's a select message by looking at the subject
+            if message.subject.ends_with(".select") {
+                // Extract the number from the subject (akasha.1.select -> 1)
+                if let Some(num) = message
+                    .subject
+                    .split('.')
+                    .nth(1)
+                    .and_then(|n| n.parse::<u32>().ok())
+                {
+                    ui_sender.send(UiMessage::Select(num)).unwrap();
+                    continue;
+                }
+            }
+
+            // Handle other messages as before
             match message.data.as_slice() {
                 b"Clockwise" => ui_sender.send(UiMessage::Increment).unwrap(),
                 b"CounterClockwise" => ui_sender.send(UiMessage::Decrement).unwrap(),
-                b"Select" => ui_sender.send(UiMessage::Select).unwrap(),
                 _ => (),
             }
         }
     });
-
     thread::spawn(move || {
         while let Ok(select_message) = select_receiver.recv() {
             nats_client
-                .publish("xone.player.1.select", select_message.file_path.as_bytes())
+                .publish(
+                    &format!("anahata.{}.select", select_message.player),
+                    select_message.file_path.as_bytes(),
+                )
                 .unwrap();
         }
     });
@@ -130,11 +148,13 @@ impl eframe::App for FileSelectorApp {
                         self.selected_index -= 1;
                     }
                 }
-                UiMessage::Select => {
+                UiMessage::Select(player) => {
                     if let Some(selected_file) = self.flac_files.get(self.selected_index) {
                         dbg!(&selected_file.path);
                         let file_path = selected_file.path.to_string_lossy().to_string();
-                        if let Err(err) = self.select_sender.send(SelectMessage { file_path }) {
+                        if let Err(err) =
+                            self.select_sender.send(SelectMessage { player, file_path })
+                        {
                             eprintln!("Failed to send selection: {}", err);
                         }
                     }
@@ -307,7 +327,7 @@ fn load_album_art(
     (Some(inline_texture), Some(large_texture))
 }
 
-// Garbage should be a real full hash
+// Garbage, should be a real full hash
 fn calculate_hash(data: &[u8]) -> u64 {
     let hash_len = data.len().min(256);
 

@@ -9,10 +9,24 @@ use jack::{
 // (Turn these into _ONLY_ transport messages and add a separate mixer set later)
 #[derive(Debug, Clone, Copy)]
 pub enum XoneMessage {
-    Fader { id: u8, value: f32 },
-    Encoder { id: u8, direction: EncoderDirection },
-    Button { id: u8, pressed: bool },
-    Knob { id: u8, value: f32 },
+    Fader {
+        id: u8,
+        value: f32,
+    },
+    Encoder {
+        id: u8,
+        direction: EncoderDirection,
+    },
+    Button {
+        id: u8,
+        pressed: bool,
+        select_shift: bool,
+        main_shift: Shift,
+    },
+    Knob {
+        id: u8,
+        value: f32,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -261,6 +275,8 @@ impl XoneK2 {
         Some(XoneMessage::Button {
             id: id,
             pressed: pressed,
+            main_shift: self.shift,
+            select_shift: self.bottom_right_encoder_shift,
         })
     }
 
@@ -355,7 +371,7 @@ fn apply_color(note: u8, color: Color) -> u8 {
     note + color.offset()
 }
 
-#[derive(PartialOrd, Ord, PartialEq, Eq, Debug)]
+#[derive(PartialOrd, Ord, PartialEq, Eq, Debug, Clone, Copy)]
 pub enum Shift {
     Off,
     Red,

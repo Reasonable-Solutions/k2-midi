@@ -474,40 +474,37 @@ fn send_metadata(
 fn control_thread(cmd_tx: Sender<PlayerCommand>) {
     let nc = nats::connect("nats://localhost:4222").expect("Failed to connect to NATS");
 
-    let sub = nc.subscribe("xone.>").expect("Failed to subscribe topic");
-
+    let sub = nc
+        .subscribe("anahata.>")
+        .expect("Failed to subscribe topic");
+    let player_num = ANAHATA_NO.load(Ordering::Relaxed);
     println!("Control thread started, listening for NATS messages");
-
     for msg in sub.messages() {
-        match msg.subject.as_ref() {
-            "xone.player.stop" => {
-                if IS_PLAYING.load(Ordering::Relaxed) == true {
-                    println!("Received resume command via NATS");
-                    IS_PLAYING.store(false, Ordering::Relaxed)
-                } else {
-                    println!("Received stop command via NATS");
-                    IS_PLAYING.store(true, Ordering::Relaxed)
-                };
-            }
-            "xone.player.1.select" => {
-                let content = String::from_utf8_lossy(&msg.data);
-                let path = PathBuf::from(content.into_owned());
-                cmd_tx
-                    .send(PlayerCommand::ChangeSong(path))
-                    .expect("Failed to send command");
-            }
-            "xone.player.1.skipforward" => {
-                cmd_tx
-                    .send(PlayerCommand::SkipForward)
-                    .expect("Failed to send command");
-            }
-            "xone.player.1.skipbackward" => {
-                cmd_tx
-                    .send(PlayerCommand::SkipBackward)
-                    .expect("Failed to send command");
-            }
-
-            _ => {}
+        dbg!(&msg);
+        let subject = msg.subject;
+        if subject == format!("anahata.{}.stop", player_num) {
+            if IS_PLAYING.load(Ordering::Relaxed) == true {
+                println!("Received resume command via NATS");
+                IS_PLAYING.store(false, Ordering::Relaxed)
+            } else {
+                println!("Received stop command via NATS");
+                IS_PLAYING.store(true, Ordering::Relaxed)
+            };
+        } else if subject == format!("anahata.{}.select", player_num) {
+            dbg!(subject);
+            let content = String::from_utf8_lossy(&msg.data);
+            let path = PathBuf::from(content.into_owned());
+            cmd_tx
+                .send(PlayerCommand::ChangeSong(path))
+                .expect("Failed to send command");
+        } else if subject == format!("anahata.{}.skipforward", player_num) {
+            cmd_tx
+                .send(PlayerCommand::SkipForward)
+                .expect("Failed to send command");
+        } else if subject == format!("anahata.{}.skipbackward", player_num) {
+            cmd_tx
+                .send(PlayerCommand::SkipBackward)
+                .expect("Failed to send command");
         }
     }
 }
@@ -539,13 +536,14 @@ fn decode_flac_to_vec(path: &PathBuf, meta_tx: &Sender<MetaCommand>) -> Vec<(f32
     let track = format.default_track().expect("No default track");
     let codec_params = track.codec_params.clone();
 
+    // Unused, This is for flacs that are bundles of songs
+    // I have never seen this in my life
     let track_id = track.id;
 
     let total_frames = track
         .codec_params
         .n_frames
         .expect("Could not determine total number of frames");
-    dbg!(total_frames);
 
     let sample_format = track.codec_params.sample_format;
     // Process the collected packets in parallel
@@ -579,6 +577,8 @@ fn decode_flac_to_vec(path: &PathBuf, meta_tx: &Sender<MetaCommand>) -> Vec<(f32
 }
 
 fn decode_audio_buffer(decoded: AudioBufferRef<'_>, decoded_samples: &mut Vec<(f32, f32)>) {
+    // All these guys should get the SIMD treatment too.
+    // otoh, who uses U24 samples?
     match decoded {
         AudioBufferRef::F32(buf) => {
             for (left, right) in buf.chan(0).iter().zip(buf.chan(1).iter()) {
@@ -727,7 +727,6 @@ fn playback_thread(
                 }
                 PLAYHEAD.fetch_add(chunk_size as u64, Ordering::Relaxed);
 
-                // Update CURRENT_POSITION (in milliseconds)
                 let ms_position = (PLAYHEAD.load(Ordering::Relaxed) as f64 * MS_PER_SAMPLE) as u64;
                 CURRENT_POSITION.store(ms_position, Ordering::Relaxed);
             }
@@ -825,7 +824,7 @@ fn generate_waveform(song: &Vec<(f32, f32)>, num_bins: usize) -> Vec<WaveformBin
         let mut high_l = 0.0f32;
         let mut high_r = 0.0f32;
 
-        // Process the chunk with DJ-style crossovers
+        // I should add SIMD for all this stuff. one day.
         for &(left, right) in &song[chunk_start..chunk_end] {
             // Low band (below 200Hz)
             low_l = low_l * low_coeff + left * (1.0 - low_coeff);
@@ -920,7 +919,6 @@ fn get_player_number() -> Result<(), Box<dyn std::error::Error>> {
     let timeout = std::time::Duration::from_secs_f64(1.5);
     let mut active_numbers = std::collections::HashSet::new();
 
-    // Collect messages for 1.5 seconds
     while start.elapsed() < timeout {
         match sub.next_timeout(timeout - start.elapsed()) {
             Ok(msg) => {
@@ -937,8 +935,6 @@ fn get_player_number() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-
-    // Find first gap in 1-4 range
     for num in 1..=4 {
         if !active_numbers.contains(&num) {
             ANAHATA_NO.store(num as u32, std::sync::atomic::Ordering::Relaxed);
@@ -946,7 +942,6 @@ fn get_player_number() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // If no gaps, take max + 1 (or 1 if no numbers seen)
     let next_num = active_numbers.iter().max().map_or(1, |&max| max + 1);
     ANAHATA_NO.store(next_num as u32, std::sync::atomic::Ordering::Relaxed);
     Ok(())

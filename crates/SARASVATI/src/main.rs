@@ -94,7 +94,6 @@ fn run_nats(
     let nc = nats::connect("nats://localhost:4222")?;
 
     while let Ok(msg) = nats_rx.recv() {
-        dbg!(&msg);
         match msg {
             XoneMessage::Fader { id, value } => {
                 let _ = nc.publish("xone.fader", format!("{},{}", id, value));
@@ -102,32 +101,61 @@ fn run_nats(
             XoneMessage::Encoder { id, direction } => {
                 println!("ENCODER {}", id);
                 if id == 14 {
-                    let _ = nc.publish("xone.library", format!("{:?}", direction));
+                    let _ = nc.publish("akasha.select", format!("{:?}", direction));
                 } else {
                     let _ = nc.publish("xone.encoder", format!("{},{:?}", id, direction));
                 }
             }
-            XoneMessage::Button { id, pressed } => {
+            XoneMessage::Button {
+                id,
+                pressed,
+                select_shift,
+                main_shift,
+            } => {
                 println!("BUTTON {}-{}", id, pressed);
 
                 match id {
-                    14 => {
+                    30 => {
                         if pressed {
-                            println!("select button pressed");
-                            let _ = nc.publish("xone.library", "Select");
-                        }
-                    }
-                    25 => {
-                        if pressed {
-                            nc.publish("xone.player.1.skipbackward", "na");
+                            nc.publish("anahata.2.skipbackward", "na");
                         }
                     }
 
                     26 => {
                         if pressed {
-                            nc.publish("xone.player.1.skipforward", "na");
+                            nc.publish("anahata.2.skipforward", "na");
                         }
                     }
+                    29 => {
+                        if pressed {
+                            nc.publish("anahata.1.skipbackward", "na");
+                        }
+                    }
+
+                    25 => {
+                        if pressed {
+                            nc.publish("anahata.1.skipforward", "na");
+                        }
+                    }
+                    41 => {
+                        if pressed {
+                            if select_shift {
+                                nc.publish("akasha.1.select", "na");
+                            } else {
+                                nc.publish("anahata.1.stop", "na");
+                            }
+                        }
+                    }
+                    42 => {
+                        if pressed {
+                            if select_shift {
+                                nc.publish("akasha.2.select", "na");
+                            } else {
+                                nc.publish("anahata.2.stop", "na");
+                            }
+                        }
+                    }
+
                     _ => {}
                 }
 
