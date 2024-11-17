@@ -114,6 +114,8 @@ fn run_nats(
             } => {
                 println!("BUTTON {}-{}", id, pressed);
 
+                // These numbers are silly, at this stage I should not care about midi
+                // crap.
                 match id {
                     30 => {
                         if pressed {
