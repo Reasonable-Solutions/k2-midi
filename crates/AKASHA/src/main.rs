@@ -72,6 +72,7 @@ fn main() {
             }
         }
     });
+
     thread::spawn(move || {
         while let Ok(select_message) = select_receiver.recv() {
             nats_client

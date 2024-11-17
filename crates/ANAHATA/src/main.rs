@@ -480,7 +480,6 @@ fn control_thread(cmd_tx: Sender<PlayerCommand>) {
     let player_num = ANAHATA_NO.load(Ordering::Relaxed);
     println!("Control thread started, listening for NATS messages");
     for msg in sub.messages() {
-        dbg!(&msg);
         let subject = msg.subject;
         if subject == format!("anahata.{}.stop", player_num) {
             if IS_PLAYING.load(Ordering::Relaxed) == true {
@@ -491,7 +490,6 @@ fn control_thread(cmd_tx: Sender<PlayerCommand>) {
                 IS_PLAYING.store(true, Ordering::Relaxed)
             };
         } else if subject == format!("anahata.{}.select", player_num) {
-            dbg!(subject);
             let content = String::from_utf8_lossy(&msg.data);
             let path = PathBuf::from(content.into_owned());
             cmd_tx

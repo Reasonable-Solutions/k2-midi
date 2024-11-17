@@ -33,6 +33,7 @@ dependencies = [
  "metaflac",
  "nats",
  "procfs",
+ "rand",
  "rayon",
  "rtrb",
  "rubato",

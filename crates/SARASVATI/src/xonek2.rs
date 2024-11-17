@@ -46,6 +46,8 @@ pub enum ControlType {
 #[derive(Debug)]
 pub struct XoneK2 {
     pub shift: Shift,
+    pub play1: bool,
+    pub play2: bool,
     pub bottom_left_encoder_shift: bool,
     pub bottom_right_encoder_shift: bool,
     pub top_left_encoder_shift: bool,
@@ -97,6 +99,8 @@ impl XoneK2 {
 
         let xone = Self {
             shift: Shift::Off,
+            play1: false,
+            play2: false,
             bottom_left_encoder_shift: false,
             bottom_right_encoder_shift: false,
             top_left_encoder_shift: false,
@@ -240,6 +244,7 @@ impl XoneK2 {
     }
 
     fn handle_button(&mut self, id: u8, pressed: bool, ps: &ProcessScope) -> Option<XoneMessage> {
+        println!("ID ID ID {:#04x}", id);
         match id {
             RENC => {
                 self.bottom_right_encoder_shift = pressed;
@@ -259,6 +264,27 @@ impl XoneK2 {
                     }
                 }
             }
+            0x29 => {
+                if pressed {
+                    if self.play1 {
+                        let _ = self.send_note_off(0x29, ps);
+                    } else {
+                        let _ = self.send_note_with_color(0x29, Color::Red, ps);
+                    };
+                    self.play1 = !self.play1;
+                }
+            }
+            0x2a => {
+                if pressed {
+                    if self.play2 {
+                        let _ = self.send_note_off(0x2a, ps);
+                    } else {
+                        let _ = self.send_note_with_color(0x2a, Color::Red, ps);
+                    };
+                    self.play2 = !self.play2;
+                }
+            }
+
             // rows of buttons, top encoders to bottom button field
             0x34..=0x37 => {}
             0x30..=0x33 => {}
@@ -287,7 +313,7 @@ impl XoneK2 {
         ps: &ProcessScope,
     ) -> Result<(), Box<dyn Error>> {
         let adjusted_note = apply_color(note, color);
-        print!("{:#04x}", adjusted_note);
+        print!("NOTE NOTE NOTE NOTE NOTE {:#04x}", adjusted_note);
         let message = [0x9e, adjusted_note, 0x7F];
         let mut out_port = self.midi_out.writer(ps);
         out_port.write(&jack::RawMidi {
