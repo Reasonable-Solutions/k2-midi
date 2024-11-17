@@ -86,12 +86,11 @@ impl PlayerApp {
             egui::Color32::from_rgb((255.0) as u8, (255.0) as u8, (50.0 - t * 50.0) as u8)
         }
     }
-
     fn draw_detailed_waveform(&mut self, ui: &mut egui::Ui) {
         let waveform_height = 400.0;
         let pixels_per_second = 10.0;
-        let duration_secs = DURATION.load(Ordering::Relaxed) as f32 / 1000.0;
-        let total_width = duration_secs * pixels_per_second;
+        let duration_secs = DURATION.load(Ordering::Relaxed) as f64 / 1000.0;
+        let total_width = (duration_secs * pixels_per_second as f64) as f32;
 
         egui::ScrollArea::horizontal()
             .auto_shrink([false, false])
@@ -104,34 +103,38 @@ impl PlayerApp {
                 if !self.waveform.is_empty() {
                     let rect = detailed_response.rect;
                     let painter = ui.painter();
-
                     let width_per_bin = total_width / self.waveform.len() as f32;
                     let playhead_x = ui.clip_rect().center().x;
 
-                    let current_bin = (CURRENT_POSITION.load(Ordering::Relaxed) as f32
-                        / DURATION.load(Ordering::Relaxed) as f32
-                        * self.waveform.len() as f32)
-                        as usize;
+                    // Calculate the offset needed to align the current position with the playhead
+                    let current_position = CURRENT_POSITION.load(Ordering::Relaxed) as f64;
+                    let total_duration = DURATION.load(Ordering::Relaxed) as f64;
+
+                    // For the initial state (position = 0), align the left edge exactly with the playhead
+                    let view_offset = if current_position == 0.0 {
+                        playhead_x - rect.left()
+                    } else {
+                        let progress = current_position / total_duration;
+                        let target_x = rect.left() + (total_width * progress as f32);
+                        playhead_x - target_x
+                    };
+
                     let now = std::time::Instant::now();
-                    // Only update scroll position every 16ms (roughly 60fps)
                     if now.duration_since(self.last_update).as_millis() >= 16 {
-                        self.smooth_offset = -(current_bin as f32 * width_per_bin) + playhead_x;
+                        self.smooth_offset = view_offset;
                         self.last_update = now;
                     }
 
-                    // Use the stored scroll offset instead of calculating it every frame
-                    let scroll_offset = self.smooth_offset;
-
-                    // Draw waveform bins from back to front
+                    // Draw waveform bins
                     for (i, bin) in self.waveform.iter().enumerate() {
-                        let x = rect.left() + (i as f32 * width_per_bin) + scroll_offset;
+                        let bin_x = rect.left() + (i as f32 * width_per_bin) + self.smooth_offset;
 
-                        if x >= ui.clip_rect().left() - width_per_bin
-                            && x <= ui.clip_rect().right() + width_per_bin
+                        if bin_x >= ui.clip_rect().left() - width_per_bin
+                            && bin_x <= ui.clip_rect().right() + width_per_bin
                         {
                             let center_y = rect.center().y;
 
-                            // Scale RMS values and map to colors
+                            // Scale RMS values
                             let low_rms = (bin.low.rms_left + bin.low.rms_right) * 0.5;
                             let mid_rms = 0.4 + (bin.mid.rms_left + bin.mid.rms_right) * 0.3;
                             let high_rms = 0.7 + (bin.high.rms_left + bin.high.rms_right) * 0.3;
@@ -140,46 +143,43 @@ impl PlayerApp {
                             let mid_color = Self::viridis_color(mid_rms);
                             let high_color = Self::viridis_color(high_rms);
 
-                            // Draw from back to front with different widths
-                            // Low frequencies (widest)
+                            // Draw frequency bands
                             painter.line_segment(
                                 [
                                     egui::pos2(
-                                        x,
+                                        bin_x,
                                         center_y - bin.low.rms_left * waveform_height * 0.6,
                                     ),
                                     egui::pos2(
-                                        x,
+                                        bin_x,
                                         center_y + bin.low.rms_right * waveform_height * 0.6,
                                     ),
                                 ],
                                 egui::Stroke::new(3.0, low_color),
                             );
 
-                            // Mid frequencies (medium)
                             painter.line_segment(
                                 [
                                     egui::pos2(
-                                        x,
+                                        bin_x,
                                         center_y - bin.mid.rms_left * waveform_height * 0.7,
                                     ),
                                     egui::pos2(
-                                        x,
+                                        bin_x,
                                         center_y + bin.mid.rms_right * waveform_height * 0.7,
                                     ),
                                 ],
                                 egui::Stroke::new(2.0, mid_color),
                             );
 
-                            // High frequencies (thinnest)
                             painter.line_segment(
                                 [
                                     egui::pos2(
-                                        x,
+                                        bin_x,
                                         center_y - bin.high.rms_left * waveform_height * 0.30,
                                     ),
                                     egui::pos2(
-                                        x,
+                                        bin_x,
                                         center_y + bin.high.rms_right * waveform_height * 0.30,
                                     ),
                                 ],
@@ -188,7 +188,7 @@ impl PlayerApp {
                         }
                     }
 
-                    // Draw centered playhead
+                    // Draw playhead
                     painter.line_segment(
                         [
                             egui::pos2(playhead_x, rect.top()),
@@ -197,32 +197,32 @@ impl PlayerApp {
                         egui::Stroke::new(2.0, egui::Color32::WHITE),
                     );
 
-                    // Handle interactions
+                    // Handle drag interactions
                     if detailed_response.dragged() {
                         let drag_delta = detailed_response.drag_delta();
-                        let time_per_pixel = duration_secs / total_width;
-                        let time_delta = -drag_delta.x * time_per_pixel;
+                        let time_per_pixel = duration_secs / total_width as f64;
+                        let time_delta = -drag_delta.x as f64 * time_per_pixel;
 
-                        let new_pos = (CURRENT_POSITION.load(Ordering::Relaxed) as f32
-                            + time_delta * 1000.0) as u64;
+                        let new_pos = (current_position + time_delta * 1000.0) as u64;
                         let new_pos = new_pos.clamp(0, DURATION.load(Ordering::Relaxed));
 
-                        let new_samples = ((new_pos as f64 / 1000.0) * 48000.0) as u64;
+                        let sample_rate = 48000.0;
+                        let new_samples = ((new_pos as f64 / 1000.0) * sample_rate).round() as u64;
+
                         PLAYHEAD.store(new_samples, Ordering::Relaxed);
                         CURRENT_POSITION.store(new_pos, Ordering::Relaxed);
                     }
 
-                    // Hover effect
-                    if detailed_response.hovered() {
-                        if let Some(hover_pos) = detailed_response.hover_pos() {
-                            painter.line_segment(
-                                [
-                                    egui::pos2(hover_pos.x, rect.top()),
-                                    egui::pos2(hover_pos.x, rect.bottom()),
-                                ],
-                                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(100)),
-                            );
-                        }
+                    // Debug visualization
+                    if current_position == 0.0 {
+                        // Draw start marker
+                        painter.line_segment(
+                            [
+                                egui::pos2(rect.left() + self.smooth_offset, rect.top()),
+                                egui::pos2(rect.left() + self.smooth_offset, rect.bottom()),
+                            ],
+                            egui::Stroke::new(1.0, egui::Color32::RED),
+                        );
                     }
                 }
             });
@@ -678,7 +678,7 @@ fn playback_thread(
                 let total_samples = song.len() as f64;
                 let duration_ms = (total_samples * MS_PER_SAMPLE) as u64;
                 DURATION.store(duration_ms, Ordering::Relaxed);
-                IS_PLAYING.store(true, Ordering::Relaxed);
+                IS_PLAYING.store(false, Ordering::Relaxed);
             }
             Ok(PlayerCommand::SkipForward) => {
                 let current_pos = PLAYHEAD.load(Ordering::Relaxed);
