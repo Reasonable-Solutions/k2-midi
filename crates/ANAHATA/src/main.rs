@@ -373,6 +373,10 @@ impl eframe::App for PlayerApp {
 }
 
 fn main() {
+    let _ = run_heartbeat();
+    get_player_number();
+    println!("GOT");
+
     let (client, _status) = Client::new("ANAHATA", ClientOptions::NO_START_SERVER)
         .expect("Failed to create JACK client");
     let jack_buffer_size = client.buffer_size();
@@ -882,4 +886,68 @@ fn generate_waveform(song: &Vec<(f32, f32)>, num_bins: usize) -> Vec<WaveformBin
     }
 
     waveform
+}
+
+fn run_heartbeat() -> Result<(), Box<dyn std::error::Error>> {
+    let nc = nats::connect("nats://localhost:4222")?;
+
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(500));
+
+        let player_num = ANAHATA_NO.load(Ordering::Relaxed);
+        if player_num > 0 {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
+
+            let heartbeat = format!("{}-{}", player_num, timestamp);
+
+            if let Err(e) = nc.publish("anahata.heartbeat", heartbeat.into_bytes()) {
+                eprintln!("Failed to publish heartbeat: {}", e);
+            }
+        }
+    });
+
+    Ok(())
+}
+
+fn get_player_number() -> Result<(), Box<dyn std::error::Error>> {
+    let nc = nats::connect("nats://localhost:4222")?;
+    let sub = nc.subscribe("anahata.heartbeat")?;
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs_f64(1.5);
+    let mut active_numbers = std::collections::HashSet::new();
+
+    // Collect messages for 1.5 seconds
+    while start.elapsed() < timeout {
+        match sub.next_timeout(timeout - start.elapsed()) {
+            Ok(msg) => {
+                if let Ok(content) = std::str::from_utf8(&msg.data) {
+                    if let Some((number_str, _)) = content.split_once('-') {
+                        if let Ok(number) = number_str.parse::<u32>() {
+                            active_numbers.insert(number);
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                break;
+            }
+        }
+    }
+
+    // Find first gap in 1-4 range
+    for num in 1..=4 {
+        if !active_numbers.contains(&num) {
+            ANAHATA_NO.store(num as u32, std::sync::atomic::Ordering::Relaxed);
+            return Ok(());
+        }
+    }
+
+    // If no gaps, take max + 1 (or 1 if no numbers seen)
+    let next_num = active_numbers.iter().max().map_or(1, |&max| max + 1);
+    ANAHATA_NO.store(next_num as u32, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
 }
