@@ -26,6 +26,11 @@ struct SelectMessage {
     file_path: String,
 }
 
+enum File {
+    FlacFile(FlacFile),
+    Dir(PathBuf),
+}
+
 struct FlacFile {
     path: PathBuf,
     title: Option<String>,
@@ -100,8 +105,10 @@ fn main() {
 struct FileSelectorApp {
     ui_receiver: Receiver<UiMessage>,
     select_sender: Sender<SelectMessage>,
-    flac_files: Vec<FlacFile>,
+    files: Vec<File>,
     selected_index: usize,
+    current_dir: PathBuf,
+    parent_exists: bool,
     album_art_cache: HashMap<u64, (TextureHandle, TextureHandle)>,
 }
 
@@ -112,14 +119,19 @@ impl FileSelectorApp {
         select_sender: Sender<SelectMessage>,
     ) -> Self {
         let mut album_art_cache = HashMap::new();
-
-        let mut flac_files: Vec<FlacFile> = fs::read_dir("./music")
+        let mut files: Vec<File> = fs::read_dir("./music")
             .unwrap()
             .filter_map(|entry| {
                 let entry = entry.unwrap();
                 let path = entry.path();
                 if path.extension().map(|ext| ext == "flac").unwrap_or(false) {
-                    Some(FlacFile::from_path(&path, &cc, &mut album_art_cache))
+                    Some(File::FlacFile(FlacFile::from_path(
+                        &path,
+                        &cc.egui_ctx,
+                        &mut album_art_cache,
+                    )))
+                } else if path.is_dir() {
+                    Some(File::Dir(path))
                 } else {
                     None
                 }
@@ -129,10 +141,52 @@ impl FileSelectorApp {
         Self {
             ui_receiver,
             select_sender,
-            flac_files,
+            files,
             selected_index: 0,
             album_art_cache,
+            parent_exists: false,
+            current_dir: PathBuf::from("./music"),
         }
+    }
+    fn navigate_to(&mut self, path: PathBuf, ctx: &egui::Context) {
+        let (files, cache) = self.load_directory(&path, ctx);
+        self.current_dir = path;
+        self.parent_exists = self.current_dir.parent().is_some();
+        self.files = files;
+        self.album_art_cache = cache;
+        self.selected_index = 0;
+    }
+
+    fn load_directory(
+        &self,
+        dir: &PathBuf,
+        ctx: &egui::Context,
+    ) -> (Vec<File>, HashMap<u64, (TextureHandle, TextureHandle)>) {
+        let mut album_art_cache = HashMap::new();
+        let mut entries = Vec::new();
+
+        if let Ok(read_dir) = fs::read_dir(dir) {
+            for entry in read_dir.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    entries.push(File::Dir(path));
+                } else if path.extension().map(|ext| ext == "flac").unwrap_or(false) {
+                    entries.push(File::FlacFile(FlacFile::from_path(
+                        &path,
+                        ctx,
+                        &mut album_art_cache,
+                    )));
+                }
+            }
+        }
+
+        entries.sort_by(|a, b| match (a, b) {
+            (File::Dir(_), File::FlacFile(_)) => std::cmp::Ordering::Less,
+            (File::FlacFile(_), File::Dir(_)) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        });
+
+        (entries, album_art_cache)
     }
 }
 impl eframe::App for FileSelectorApp {
@@ -140,7 +194,7 @@ impl eframe::App for FileSelectorApp {
         while let Ok(message) = self.ui_receiver.try_recv() {
             match message {
                 UiMessage::Increment => {
-                    if self.selected_index < self.flac_files.len() - 1 {
+                    if self.selected_index < self.files.len() - 1 {
                         self.selected_index += 1;
                     }
                 }
@@ -150,13 +204,20 @@ impl eframe::App for FileSelectorApp {
                     }
                 }
                 UiMessage::Select(player) => {
-                    if let Some(selected_file) = self.flac_files.get(self.selected_index) {
-                        dbg!(&selected_file.path);
-                        let file_path = selected_file.path.to_string_lossy().to_string();
-                        if let Err(err) =
-                            self.select_sender.send(SelectMessage { player, file_path })
-                        {
-                            eprintln!("Failed to send selection: {}", err);
+                    if let Some(selected_file) = self.files.get(self.selected_index) {
+                        match selected_file {
+                            File::FlacFile(flac) => {
+                                let file_path = flac.path.to_string_lossy().to_string();
+                                if let Err(err) =
+                                    self.select_sender.send(SelectMessage { player, file_path })
+                                {
+                                    eprintln!("Failed to send selection: {}", err);
+                                }
+                            }
+                            File::Dir(path) => {
+                                dbg!(&path);
+                                self.navigate_to(path.clone(), ctx)
+                            }
                         }
                     }
                 }
@@ -175,33 +236,51 @@ impl eframe::App for FileSelectorApp {
             });
 
             ui.horizontal(|ui| {
-                if let Some(selected_file) = self.flac_files.get(self.selected_index) {
-                    if let Some(large_art) = &selected_file.large_album_art {
-                        ui.image(large_art);
+                if let Some(file) = self.files.get(self.selected_index) {
+                    match file {
+                        File::FlacFile(flac) => {
+                            if let Some(large_art) = &flac.large_album_art {
+                                ui.image(large_art);
+                            }
+                        }
+                        File::Dir(_) => (),
                     }
                 }
             });
 
-            for (i, file) in self.flac_files.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    if let Some(inline_art) = &file.inline_album_art {
-                        ui.image(inline_art);
+            for (i, file) in self.files.iter().enumerate() {
+                ui.horizontal(|ui| match file {
+                    File::FlacFile(flac) => {
+                        if let Some(inline_art) = &flac.inline_album_art {
+                            ui.image(inline_art);
+                        }
+                        let label = format!(
+                            "🎵 {} - {}",
+                            flac.title
+                                .clone()
+                                .unwrap_or_else(|| "Unknown Title".to_string()),
+                            flac.artist
+                                .clone()
+                                .unwrap_or_else(|| "Unknown Artist".to_string())
+                        );
+                        if i == self.selected_index {
+                            ui.colored_label(egui::Color32::YELLOW, label);
+                        } else {
+                            ui.label(label);
+                        }
                     }
-
-                    let label = format!(
-                        "{} - {}",
-                        file.title
-                            .clone()
-                            .unwrap_or_else(|| "Unknown Title".to_string()),
-                        file.artist
-                            .clone()
-                            .unwrap_or_else(|| "Unknown Artist".to_string())
-                    );
-
-                    if i == self.selected_index {
-                        ui.colored_label(egui::Color32::YELLOW, label);
-                    } else {
-                        ui.label(label);
+                    File::Dir(path) => {
+                        let label = format!(
+                            "📁 {}",
+                            path.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("Unknown")
+                        );
+                        if i == self.selected_index {
+                            ui.colored_label(egui::Color32::YELLOW, label);
+                        } else {
+                            ui.label(label);
+                        }
                     }
                 });
             }
@@ -212,7 +291,7 @@ impl eframe::App for FileSelectorApp {
 impl FlacFile {
     fn from_path(
         path: &PathBuf,
-        cc: &eframe::CreationContext<'_>,
+        cc: &egui::Context,
         cache: &mut HashMap<u64, (TextureHandle, TextureHandle)>,
     ) -> Self {
         let tag = Tag::read_from_path(path).ok();
@@ -259,7 +338,7 @@ impl FlacFile {
 
 fn load_album_art(
     data: &[u8],
-    cc: &eframe::CreationContext<'_>,
+    cc: &egui::Context,
     cache: &mut HashMap<u64, (TextureHandle, TextureHandle)>,
 ) -> (Option<TextureHandle>, Option<TextureHandle>) {
     let hash = calculate_hash(data);
@@ -302,7 +381,7 @@ fn load_album_art(
         &inline_thumbnail,
     );
 
-    let inline_texture = cc.egui_ctx.load_texture(
+    let inline_texture = cc.load_texture(
         "inline_album_art",
         inline_color_image,
         TextureOptions::default(),
@@ -316,7 +395,7 @@ fn load_album_art(
         ],
         &large_thumbnail,
     );
-    let large_texture = cc.egui_ctx.load_texture(
+    let large_texture = cc.load_texture(
         "large_album_art",
         large_color_image,
         TextureOptions::default(),
