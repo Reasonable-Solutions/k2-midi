@@ -481,7 +481,19 @@ fn control_thread(cmd_tx: Sender<PlayerCommand>) {
     println!("Control thread started, listening for NATS messages");
     for msg in sub.messages() {
         let subject = msg.subject;
-        if subject == format!("anahata.{}.stop", player_num) {
+        if subject == "drishti.result" {
+            let content = String::from_utf8_lossy(&msg.data);
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                let bpm = v["bpm"].as_u64().unwrap_or(0) as u32;
+                let beat_times: Vec<f64> = v["beat_times"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .filter_map(|v| v.as_f64())
+                    .collect();
+                println!("Received BPM: {}, {} beats", bpm, beat_times.len());
+            }
+        } else if subject == format!("anahata.{}.stop", player_num) {
             if IS_PLAYING.load(Ordering::Relaxed) == true {
                 println!("Received resume command via NATS");
                 IS_PLAYING.store(false, Ordering::Relaxed)

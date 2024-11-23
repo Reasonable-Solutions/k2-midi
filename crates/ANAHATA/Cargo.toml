@@ -23,3 +23,4 @@ nats = { version = "0.25.0", features = ["unstable"] }
 symphonia = { version = "0.5.4", default-features = false, features = ["flac"]}
 procfs = "0.17.0"
 rand = "0.8.5"
+serde_json = "1.0.133"
