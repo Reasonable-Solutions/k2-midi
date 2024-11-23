@@ -54,30 +54,37 @@
           inherit src;
           strictDeps = true;
 
-          buildInputs = with pkgs; [
-            pkg-config
-            rust-analyzer
-            natscli
-            jack2
-            alsa-lib
-            nats-top
-            nats-server
-            coreAudio
+          buildInputs = with pkgs;
+            [
+              pkg-config
+              rust-analyzer
+              natscli
+              jack2
+              alsa-lib
+              nats-top
+              nats-server
+              coreAudio
+              python3
+              python3Packages.pip
+              python3Packages.librosa
+              python3Packages.numpy
+              python3Packages.soundfile
+              python3Packages.scipy
+              python3Packages.audioread
+              python3Packages.resampy
+              python3Packages.joblib
+              # GUI libs
+              libxkbcommon
+              libGL
+              fontconfig
 
-            # GUI libs
-            libxkbcommon
-            libGL
-            fontconfig
+              # x11 libraries
+              xorg.libXcursor
+              xorg.libXrandr
+              xorg.libXi
+              xorg.libX11
 
-            # x11 libraries
-            xorg.libXcursor
-            xorg.libXrandr
-            xorg.libXi
-            xorg.libX11
-
-          ] ++ lib.optionals pkgs.stdenv.isDarwin [
-            pkgs.libiconv
-          ];
+            ] ++ lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
 
           # Additional environment variables can be set directly
           # MY_CUSTOM_VAR = "some value";
